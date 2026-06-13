@@ -227,6 +227,16 @@ pixai_backup/
 
 ## Changelog
 
+### v4.2
+- Download progress meter — pre-flight `_quick_count()` pass (500/page, safe page size) followed by `\r`-overwriting ASCII bar in the CLI and a `QProgressBar` + label in the GUI
+- Resume-aware progress — seeds the bar from actual image files on disk via recursive glob, so a resume run opens at the correct position (`Resuming: 17234 image files already on disk`) rather than restarting at 0; works for flat, `--organize-adv`, and `--organize-adv-live` layouts
+- Config and token path resolution anchored to script directory (`Path(__file__).resolve().parent`) so the GUI finds `config.json` and `token.txt` regardless of working directory
+- `_make_session()` re-reads and refreshes module-level globals on every call, fixing the case where the module was imported before the working directory was set correctly
+- `gql()` non-JSON error converted from `sys.exit(1)` to `raise PixAIError` so the GUI Worker catches it cleanly
+- GUI Worker catches `SystemExit` as a safety net alongside `PixAIError` and `Exception`
+- GUI output folder default anchored to script directory
+- `pixai_gui_settings.json` added to `.gitignore`
+
 ### v4.1
 - PySide6 GUI (`pixai_gui.py`) — tabbed Download / Organize / Convert / Utilities window with dark Catppuccin Mocha theme, background Worker thread, and settings persistence
 - Callable API surface extracted from CLI for GUI integration: `run_download`, `run_probe`, `run_count`, `run_catalog_stats`, `cmd_rename`, `_make_session`
