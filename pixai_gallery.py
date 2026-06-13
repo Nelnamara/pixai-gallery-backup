@@ -94,7 +94,7 @@ def make_thumbnail(img_path, thumb_path):
         return False
 
 
-def build_thumbnails(rows, out_dir, thumb_dir, force=False):
+def build_thumbnails(rows, out_dir, thumb_dir, force=False, progress_cb=None):
     if Image is None:
         print("Warning: Pillow not installed -- thumbnails will not be generated.")
         return
@@ -112,9 +112,12 @@ def build_thumbnails(rows, out_dir, thumb_dir, force=False):
         if img_path and make_thumbnail(img_path, thumb_path):
             done += 1
         pct = int(done / total * 100) if total else 100
-        print("\r  Thumbnails: {}/{} ({:d}%)  ".format(done, total, pct),
-              end="", flush=True)
-    if total:
+        if progress_cb:
+            progress_cb(done, total, pct)
+        else:
+            print("\r  Thumbnails: {}/{} ({:d}%)  ".format(done, total, pct),
+                  end="", flush=True)
+    if total and not progress_cb:
         print()
 
 

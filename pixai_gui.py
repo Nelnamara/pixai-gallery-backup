@@ -1094,13 +1094,23 @@ class _GalleryServerThread(QThread):
         try:
             out = Path(self._out_dir)
             app = gallery_mod.create_app(out)
-            if self._rebuild_thumbs:
-                from pixai_gallery import load_catalog, build_thumbnails
-                thumb_dir = out / "gallery" / "thumbs"
-                thumb_dir.mkdir(parents=True, exist_ok=True)
-                rows = load_catalog(out / "catalog.csv")
-                self.log.emit(f"Building thumbnails for {len(rows)} rows…")
-                build_thumbnails(rows, out, thumb_dir, force=True)
+            from pixai_gallery import load_catalog, build_thumbnails
+            thumb_dir = out / "gallery" / "thumbs"
+            thumb_dir.mkdir(parents=True, exist_ok=True)
+            rows = load_catalog(out / "catalog.csv")
+            missing = sum(1 for r in rows if r.get("filename") and
+                          not (thumb_dir / f"{r['media_id']}.jpg").exists())
+            if missing or self._rebuild_thumbs:
+                label = "Rebuilding" if self._rebuild_thumbs else "Building"
+                self.log.emit(f"{label} thumbnails ({missing if not self._rebuild_thumbs else len(rows)} images)…")
+                _last_pct = [-1]
+                def _thumb_progress(done, total, pct):
+                    if pct - _last_pct[0] >= 5 or done == total:
+                        self.log.emit(f"  Thumbnails: {done}/{total}  ({pct}%)")
+                        _last_pct[0] = pct
+                build_thumbnails(rows, out, thumb_dir,
+                                 force=self._rebuild_thumbs,
+                                 progress_cb=_thumb_progress)
                 self.log.emit("Thumbnails done.")
             self.log.emit(f"Gallery server starting on http://127.0.0.1:{self._port}/")
             self.ready.emit()
