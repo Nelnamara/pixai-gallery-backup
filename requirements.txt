@@ -3,6 +3,9 @@ truststore ; python_version >= "3.10"
 pillow
 PySide6
 
+# gallery server (optional)
+flask
+
 # dev / testing
 pytest
 pytest-mock

@@ -5,6 +5,9 @@ config.json
 CLAUDE.md
 pixai_gui_settings.json
 
+# ---- Gallery server generated files ----
+pixai_backup/gallery/
+
 # ---- Personal output: your images, prompts, catalogs ----
 # Contains your generated images, prompt text, and dates. Keep out of git.
 pixai_backup/
