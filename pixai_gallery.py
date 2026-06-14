@@ -78,7 +78,6 @@ CREATE TABLE IF NOT EXISTS catalog (
 CREATE INDEX IF NOT EXISTS idx_created_at ON catalog(created_at);
 CREATE INDEX IF NOT EXISTS idx_model_name ON catalog(model_name);
 CREATE INDEX IF NOT EXISTS idx_rating     ON catalog(rating);
-CREATE INDEX IF NOT EXISTS idx_batch      ON catalog(batch);
 """
 
 _UPSERT = """
@@ -101,12 +100,14 @@ def init_db(db_path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path))
     con.executescript(_CREATE_TABLE)
-    # Add batch column to pre-existing databases that lack it
+    # Add batch column to pre-existing databases that lack it, then index it
     try:
         con.execute("ALTER TABLE catalog ADD COLUMN batch TEXT DEFAULT ''")
         con.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
+    con.execute("CREATE INDEX IF NOT EXISTS idx_batch ON catalog(batch)")
+    con.commit()
     con.close()
 
 
