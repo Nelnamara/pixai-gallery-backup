@@ -389,6 +389,12 @@ class SettingsBar(QGroupBox):
             default=settings.get("out", _default_out),
         )
 
+        # Auto-load token.txt from script folder if token field is empty
+        if not self.token_edit.text().strip():
+            _tok_path = Path(__file__).parent / "token.txt"
+            if _tok_path.exists():
+                self.token_edit.setText(_tok_path.read_text("utf-8").strip())
+
         out_row = QHBoxLayout()
         out_row.addWidget(lbl_out)
         out_row.addWidget(self.out_folder)
@@ -398,6 +404,12 @@ class SettingsBar(QGroupBox):
         lay.addLayout(out_row)
 
     def _load_token_file(self):
+        # If token.txt exists next to the script, load it directly
+        default_tok = Path(__file__).parent / "token.txt"
+        if default_tok.exists():
+            self.token_edit.setText(default_tok.read_text("utf-8").strip())
+            return
+        # Otherwise open a file picker
         start_dir = str(Path(__file__).parent)
         p, _ = QFileDialog.getOpenFileName(
             self, "Load token file", start_dir, "Text files (*.txt);;All files (*)")
