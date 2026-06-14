@@ -108,87 +108,149 @@ def test_load_config_missing_returns_empty(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Catalog persistence helpers — verify the known/written pattern
+# SQLite catalog helpers
 # ---------------------------------------------------------------------------
 
-def _write_catalog(path, rows, fields):
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
+from pixai_gallery import (CATALOG_FIELDS, init_db, save_catalog, load_catalog,
+                            update_rating, delete_from_catalog,
+                            migrate_csv_to_db, export_csv)
 
 
-def _read_catalog(path, fields):
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+def _make_row(**kwargs):
+    """Return a full catalog row dict with blank defaults for unset fields."""
+    return {f: "" for f in CATALOG_FIELDS} | kwargs
 
 
-FIELDS = ["task_id", "media_id", "filename", "url", "width", "height",
-          "prompt_preview", "status", "created_at"]
+def test_init_db_creates_table(tmp_path):
+    db = tmp_path / "catalog.db"
+    init_db(db)
+    assert db.exists()
+    import sqlite3
+    con = sqlite3.connect(str(db))
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    con.close()
+    assert "catalog" in tables
 
 
-def test_known_dict_loaded_from_existing_catalog(tmp_path):
-    """Simulates the 'known' dict pre-loading logic."""
+def test_save_and_load_roundtrip(tmp_path):
+    db = tmp_path / "catalog.db"
     rows = [
-        dict(task_id="t1", media_id="m1", filename="f1.png", url="u1",
-             width="512", height="512", prompt_preview="cat", status="succeeded",
-             created_at="2024-01-01"),
-        dict(task_id="t2", media_id="m2", filename="f2.png", url="u2",
-             width="768", height="768", prompt_preview="dog", status="succeeded",
-             created_at="2024-01-02"),
+        _make_row(media_id="m1", task_id="t1", filename="a.png", prompt_preview="cat"),
+        _make_row(media_id="m2", task_id="t2", filename="b.png", prompt_preview="dog"),
     ]
+    save_catalog(db, rows)
+    loaded = load_catalog(db)
+    assert len(loaded) == 2
+    by_id = {r["media_id"]: r for r in loaded}
+    assert by_id["m1"]["prompt_preview"] == "cat"
+    assert by_id["m2"]["filename"] == "b.png"
+
+
+def test_save_catalog_upserts_not_duplicates(tmp_path):
+    """Re-saving the same media_id updates the row, never inserts a duplicate."""
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_make_row(media_id="m1", filename="old.png")])
+    save_catalog(db, [_make_row(media_id="m1", filename="new.png")])
+    loaded = load_catalog(db)
+    assert len(loaded) == 1
+    assert loaded[0]["filename"] == "new.png"
+
+
+def test_save_catalog_preserves_prior_session_rows(tmp_path):
+    """Rows from a previous session that aren't in the current batch are kept."""
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_make_row(media_id="m_old", filename="old.png")])
+    save_catalog(db, [_make_row(media_id="m_new", filename="new.png")])
+    loaded = load_catalog(db)
+    ids = {r["media_id"] for r in loaded}
+    assert "m_old" in ids
+    assert "m_new" in ids
+
+
+def test_update_rating_changes_one_row(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [
+        _make_row(media_id="m1", rating=""),
+        _make_row(media_id="m2", rating="2"),
+    ])
+    update_rating(db, "m1", 5)
+    by_id = {r["media_id"]: r for r in load_catalog(db)}
+    assert by_id["m1"]["rating"] == "5"
+    assert by_id["m2"]["rating"] == "2"  # untouched
+
+
+def test_update_rating_clear_to_zero(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_make_row(media_id="m1", rating="4")])
+    update_rating(db, "m1", 0)
+    loaded = load_catalog(db)
+    assert loaded[0]["rating"] == ""
+
+
+def test_delete_from_catalog_removes_row(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [
+        _make_row(media_id="m1"),
+        _make_row(media_id="m2"),
+    ])
+    delete_from_catalog(db, "m1")
+    loaded = load_catalog(db)
+    assert len(loaded) == 1
+    assert loaded[0]["media_id"] == "m2"
+
+
+def test_delete_nonexistent_is_safe(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_make_row(media_id="m1")])
+    delete_from_catalog(db, "does_not_exist")
+    assert len(load_catalog(db)) == 1
+
+
+def test_migrate_csv_to_db(tmp_path):
     csv_path = tmp_path / "catalog.csv"
-    _write_catalog(csv_path, rows, FIELDS)
-
-    known = {}
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            mid = row.get("media_id")
-            if mid:
-                known[mid] = row
-
-    assert len(known) == 2
-    assert known["m1"]["prompt_preview"] == "cat"
-    assert known["m2"]["filename"] == "f2.png"
-
-
-def test_leftover_known_rows_written(tmp_path):
-    """Prior-session rows not seen this session must be preserved."""
-    old_rows = [
-        dict(task_id="t_old", media_id="m_old", filename="old.png", url="",
-             width="", height="", prompt_preview="old prompt", status="succeeded",
-             created_at="2023-12-01"),
-    ]
-    csv_path = tmp_path / "catalog.csv"
-    _write_catalog(csv_path, old_rows, FIELDS)
-
-    known = {}
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            mid = row.get("media_id")
-            if mid:
-                known[mid] = row
-
-    # Simulate a session that processes only new images (written = {"m_new"})
-    written = {"m_new"}
-    new_rows = [
-        dict(task_id="t_new", media_id="m_new", filename="new.png", url="",
-             width="", height="", prompt_preview="new", status="succeeded",
-             created_at="2024-06-01"),
-    ]
-
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w = csv.DictWriter(f, fieldnames=CATALOG_FIELDS)
         w.writeheader()
-        for r in new_rows:
-            w.writerow(r)
-        # Write leftover known rows not in written
-        for mid, row in known.items():
-            if mid not in written:
-                w.writerow({field: row.get(field, "") for field in FIELDS})
+        w.writerow(_make_row(media_id="m1", filename="img.png", rating="3"))
+    db = tmp_path / "catalog.db"
+    n = migrate_csv_to_db(csv_path, db)
+    assert n == 1
+    loaded = load_catalog(db)
+    assert loaded[0]["media_id"] == "m1"
+    assert loaded[0]["rating"] == "3"
 
-    result = _read_catalog(csv_path, FIELDS)
-    media_ids = {r["media_id"] for r in result}
-    assert "m_old" in media_ids, "Prior-session row must be preserved"
-    assert "m_new" in media_ids, "New-session row must be present"
+
+def test_migrate_csv_to_db_is_idempotent(tmp_path):
+    """Running migration twice must not duplicate rows."""
+    csv_path = tmp_path / "catalog.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CATALOG_FIELDS)
+        w.writeheader()
+        w.writerow(_make_row(media_id="m1", filename="img.png"))
+    db = tmp_path / "catalog.db"
+    migrate_csv_to_db(csv_path, db)
+    migrate_csv_to_db(csv_path, db)
+    assert len(load_catalog(db)) == 1
+
+
+def test_migrate_csv_missing_file_returns_zero(tmp_path):
+    db = tmp_path / "catalog.db"
+    n = migrate_csv_to_db(tmp_path / "nonexistent.csv", db)
+    assert n == 0
+
+
+def test_export_csv_roundtrip(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [
+        _make_row(media_id="m1", filename="a.png", rating="5"),
+        _make_row(media_id="m2", filename="b.png", rating=""),
+    ])
+    csv_out = tmp_path / "export.csv"
+    export_csv(db, csv_out)
+    assert csv_out.exists()
+    with open(csv_out, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    by_id = {r["media_id"]: r for r in rows}
+    assert by_id["m1"]["rating"] == "5"
+    assert set(rows[0].keys()) == set(CATALOG_FIELDS)
