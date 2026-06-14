@@ -388,6 +388,7 @@ This release merges the `feature/gallery-server` branch and marks the completion
 
 Planned future enhancements:
 
+- **SQLite catalog backend** — replace `catalog.csv` with a single `catalog.db` file for indexed queries, faster filter/sort, and cleaner single-row rating updates. CSV export will be retained for interop. Tracked on branch `feature/sqlite-catalog`.
 - **Persistent cross-page selection** — checkbox selections that survive pagination
 - **Bulk prompt edit** — edit `prompt_full` in the gallery and write back to `catalog.csv`
 - **Tag system** — freeform tags stored as an extra catalog column
