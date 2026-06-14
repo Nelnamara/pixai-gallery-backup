@@ -743,7 +743,7 @@ def cmd_organize(args, out, img_dir, db_path):
         print("\nDry run -- nothing moved. Re-run without --dry-run to apply.")
         return
 
-    catalog_updates = {}  # media_id -> new filename for catalog update
+    catalog_updates = {}  # media_id -> (new filename, batch name)
 
     for src, dst, is_batch, mid, row in plan:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -755,7 +755,8 @@ def cmd_organize(args, out, img_dir, db_path):
                 src.replace(dst)
                 moved += 1
                 final = dst
-                catalog_updates[mid] = final.name
+                batch_name = final.parent.parent.name if is_batch else ""
+                catalog_updates[mid] = (final.name, batch_name)
             except OSError as e:
                 print("  move failed {} ({})".format(src.name, e))
                 continue
@@ -829,9 +830,9 @@ def cmd_organize(args, out, img_dir, db_path):
         rows = load_catalog(db_path)
         for r in rows:
             if r["media_id"] in catalog_updates:
-                r["filename"] = catalog_updates[r["media_id"]]
+                r["filename"], r["batch"] = catalog_updates[r["media_id"]]
         save_catalog(db_path, rows)
-        print("Updated {:,} catalog filename entries.".format(len(catalog_updates)))
+        print("Updated {:,} catalog filename/batch entries.".format(len(catalog_updates)))
 
     print("\nOrganized: moved {}, already-in-place {}.".format(moved, skipped))
     if args.convert:

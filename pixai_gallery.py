@@ -41,7 +41,7 @@ except ImportError:
 # Catalog helpers
 # ---------------------------------------------------------------------------
 CATALOG_FIELDS = [
-    "task_id", "media_id", "filename", "url", "width", "height",
+    "task_id", "media_id", "filename", "batch", "url", "width", "height",
     "prompt_preview", "status", "created_at",
     "prompt_full", "natural_prompt", "seed", "steps",
     "sampler", "cfg_scale", "model_id", "model_name", "rating",
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS catalog (
     media_id        TEXT PRIMARY KEY,
     task_id         TEXT,
     filename        TEXT,
+    batch           TEXT DEFAULT '',
     url             TEXT,
     width           TEXT,
     height          TEXT,
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS catalog (
 CREATE INDEX IF NOT EXISTS idx_created_at ON catalog(created_at);
 CREATE INDEX IF NOT EXISTS idx_model_name ON catalog(model_name);
 CREATE INDEX IF NOT EXISTS idx_rating     ON catalog(rating);
+CREATE INDEX IF NOT EXISTS idx_batch      ON catalog(batch);
 """
 
 _UPSERT = """
@@ -99,7 +101,12 @@ def init_db(db_path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path))
     con.executescript(_CREATE_TABLE)
-    con.commit()
+    # Add batch column to pre-existing databases that lack it
+    try:
+        con.execute("ALTER TABLE catalog ADD COLUMN batch TEXT DEFAULT ''")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     con.close()
 
 
@@ -213,7 +220,7 @@ _SORT_SQL = {
 _DEFAULT_SORT_SQL = "created_at DESC"
 
 
-def _build_where(q, model, date_from, date_to):
+def _build_where(q, model, date_from, date_to, batch=""):
     """Return (where_clause, params) for the common filter set."""
     clauses = ["filename != ''"]
     params  = []
@@ -224,6 +231,9 @@ def _build_where(q, model, date_from, date_to):
     if model:
         clauses.append("model_name = ?")
         params.append(model)
+    if batch:
+        clauses.append("batch = ?")
+        params.append(batch)
     if date_from:
         clauses.append("SUBSTR(created_at,1,7) >= ?")
         params.append(date_from)
@@ -244,9 +254,9 @@ def get_row(db_path, media_id):
 
 
 def query_catalog(db_path, q="", model="", date_from="", date_to="",
-                  sort="newest", page=1, page_size=100):
+                  sort="newest", page=1, page_size=100, batch=""):
     """Return (rows, total) with filtering, sorting and pagination done in SQL."""
-    where, params = _build_where(q, model, date_from, date_to)
+    where, params = _build_where(q, model, date_from, date_to, batch)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     offset = (max(1, page) - 1) * page_size
     con = _connect(db_path)
@@ -263,9 +273,9 @@ def query_catalog(db_path, q="", model="", date_from="", date_to="",
         con.close()
 
 
-def list_media_ids(db_path, q="", model="", date_from="", date_to="", sort="newest"):
+def list_media_ids(db_path, q="", model="", date_from="", date_to="", sort="newest", batch=""):
     """Return ordered list of media_ids matching the filter (no row data)."""
-    where, params = _build_where(q, model, date_from, date_to)
+    where, params = _build_where(q, model, date_from, date_to, batch)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     con = _connect(db_path)
     try:
@@ -283,6 +293,18 @@ def unique_models(db_path):
     try:
         rows = con.execute(
             "SELECT DISTINCT model_name FROM catalog WHERE model_name != '' ORDER BY model_name"
+        ).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        con.close()
+
+
+def unique_batches(db_path):
+    """Return sorted list of distinct non-empty batch names in the catalog."""
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT batch FROM catalog WHERE batch != '' ORDER BY batch"
         ).fetchall()
         return [r[0] for r in rows]
     finally:
@@ -572,6 +594,17 @@ document.addEventListener('DOMContentLoaded', function() {
       {% endfor %}
     </select>
   </div>
+  {% if batches %}
+  <div>
+    <label>Batch</label><br>
+    <select name="batch">
+      <option value="">All batches</option>
+      {% for b in batches %}
+      <option value="{{ b }}" {% if b == batch_filter %}selected{% endif %}>{{ b }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
   <div>
     <label>From</label><br>
     <input type="month" name="date_from" value="{{ date_from }}" style="width:140px">
@@ -820,14 +853,17 @@ document.addEventListener('DOMContentLoaded', function() {
     def index():
         q            = request.args.get("q", "")
         model_filter = request.args.get("model", "")
+        batch_filter = request.args.get("batch", "")
         date_from    = request.args.get("date_from", "")
         date_to      = request.args.get("date_to", "")
         sort         = request.args.get("sort", "newest")
         page         = int(request.args.get("page", 1))
 
-        models = unique_models(db_path)
+        models  = unique_models(db_path)
+        batches = unique_batches(db_path)
         page_rows, total = query_catalog(
-            db_path, q, model_filter, date_from, date_to, sort, page, PAGE_SIZE
+            db_path, q, model_filter, date_from, date_to, sort, page, PAGE_SIZE,
+            batch=batch_filter,
         )
         total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(1, min(page, total_pages))
@@ -844,8 +880,9 @@ document.addEventListener('DOMContentLoaded', function() {
             INDEX_HTML,
             rows=page_rows, total=total, page=page,
             total_pages=total_pages, page_range=_page_range(page, total_pages),
-            q=q, model_filter=model_filter, date_from=date_from,
-            date_to=date_to, sort=sort, models=models,
+            q=q, model_filter=model_filter, batch_filter=batch_filter,
+            date_from=date_from,
+            date_to=date_to, sort=sort, models=models, batches=batches,
             page_url=page_url, request=request,
             current_url=request.url,
         )
@@ -874,7 +911,7 @@ document.addEventListener('DOMContentLoaded', function() {
             db_path,
             q=_qs1("q"), model=_qs1("model"),
             date_from=_qs1("date_from"), date_to=_qs1("date_to"),
-            sort=_qs1("sort", "newest"),
+            sort=_qs1("sort", "newest"), batch=_qs1("batch"),
         )
         try:
             idx = nav_ids.index(media_id)
