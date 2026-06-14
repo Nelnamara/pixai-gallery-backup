@@ -51,6 +51,25 @@ from pathlib import Path
 from pixai_gallery import (CATALOG_FIELDS, init_db, load_catalog, save_catalog,
                             migrate_csv_to_db, export_csv, _db_is_empty)
 
+
+def _ensure_db(out):
+    """Return db_path after auto-migrating catalog.csv if the db is missing/empty.
+
+    Raises PixAIError if neither db nor csv exists.
+    """
+    out = Path(out)
+    db_path  = out / "catalog.db"
+    csv_path = out / "catalog.csv"
+    if _db_is_empty(db_path):
+        if csv_path.exists():
+            print("Migrating catalog.csv → catalog.db ...")
+            n = migrate_csv_to_db(csv_path, db_path)
+            print("Migrated {:,} rows.".format(n))
+        else:
+            raise PixAIError(
+                "No catalog found in {}. Run a download (or --collect-only) first.".format(out))
+    return db_path
+
 try:
     import requests
 except ImportError:
@@ -663,9 +682,7 @@ def cmd_organize(args, out, img_dir, db_path):
     """Reorganize already-downloaded files into batch/ and YYYY-MM/ folders using
     the catalog. Embeds prompt metadata, optionally converts, writes per-folder
     info files. Idempotent (only touches flat files in images/) and dry-runnable."""
-    if not db_path.exists():
-        raise PixAIError("No catalog at {}. Run a download first (the catalog holds the "
-                         "prompts and dates this needs).".format(db_path))
+    db_path = _ensure_db(out)
     if not img_dir.exists():
         raise PixAIError("No images folder at {}.".format(img_dir))
 
@@ -931,11 +948,8 @@ def run_count(args):
 def run_catalog_stats(args):
     """Summarize the existing catalog (no network needed)."""
     out = Path(args.out)
-    db_path = out / "catalog.db"
+    db_path = _ensure_db(out)
     img_dir = out / "images"
-    if not db_path.exists():
-        raise PixAIError("No catalog found at {}. Run a download (or --collect-only) "
-                         "first.".format(db_path))
     total = downloaded = missing = pending = 0
     for row in load_catalog(db_path):
         total += 1
@@ -964,10 +978,7 @@ def run_backfill_meta(args):
     """Fill in missing url/width/height for catalog rows via resolve_media().
     Safe to re-run -- skips rows that already have all three fields."""
     out = Path(args.out)
-    db_path = out / "catalog.db"
-    if not db_path.exists():
-        raise PixAIError("No catalog found at {}.".format(db_path))
-
+    db_path = _ensure_db(out)
     session = _make_session(getattr(args, "token", None))
     rows = load_catalog(db_path)
 
@@ -1004,10 +1015,7 @@ def run_backfill_full_meta(args):
     Also fills url/width/height from the task's media object as a free side effect.
     Safe to re-run -- skips rows that already have prompt_full."""
     out = Path(args.out)
-    db_path = out / "catalog.db"
-    if not db_path.exists():
-        raise PixAIError("No catalog found at {}.".format(db_path))
-
+    db_path = _ensure_db(out)
     session = _make_session(getattr(args, "token", None))
 
     if not TASK_DETAIL_HASH:
@@ -1080,9 +1088,7 @@ def run_backfill_full_meta(args):
 
 def cmd_rename(args, out, img_dir, db_path):
     """Rename already-downloaded files to the prompt_taskid_mediaid scheme."""
-    if not db_path.exists():
-        raise PixAIError("No catalog found at {}. The catalog records each image's "
-                         "prompt; run a download first.".format(db_path))
+    db_path = _ensure_db(out)
     if not img_dir.exists():
         raise PixAIError("No images folder at {}.".format(img_dir))
     info_by_mid = {}
@@ -1149,13 +1155,11 @@ def run_download(args, progress=None):
     raw_path = out / "raw_tasks.jsonl"
     db_path  = out / "catalog.db"
 
-    # Auto-migrate existing catalog.csv when db is missing or empty
-    csv_path = out / "catalog.csv"
-    if _db_is_empty(db_path) and csv_path.exists():
-        print("Migrating catalog.csv → catalog.db ...")
-        n = migrate_csv_to_db(csv_path, db_path)
-        print("Migrated {:,} rows.".format(n))
-    else:
+    # Ensure db exists and is populated (auto-migrates catalog.csv if needed)
+    try:
+        db_path = _ensure_db(out)
+    except PixAIError:
+        # Fresh install with no prior catalog — create empty db
         init_db(db_path)
 
     # Load existing catalog so prior-session rows are never lost
