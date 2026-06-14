@@ -273,6 +273,21 @@ class LogWidget(QTextEdit):
         self.clear()
 
 
+def _make_progress_row():
+    """Return (QHBoxLayout, QProgressBar, QLabel) for a standard progress row."""
+    bar = QProgressBar()
+    bar.setRange(0, 100)
+    bar.setValue(0)
+    bar.setTextVisible(False)
+    bar.setFixedHeight(14)
+    lbl = QLabel("Ready")
+    lbl.setStyleSheet("color: #a6adc8; font-size: 12px;")
+    row = QHBoxLayout()
+    row.addWidget(bar, stretch=1)
+    row.addWidget(lbl)
+    return row, bar, lbl
+
+
 class _LogStream(io.RawIOBase):
     """Write-only stream that calls emit_fn for each completed line."""
 
@@ -760,11 +775,13 @@ class OrganizeTab(QWidget):
         self.btn_run.clicked.connect(self._run_organize)
         self.btn_stop.clicked.connect(self._stop)
 
+        prog_row, self.prog_bar, self.prog_label = _make_progress_row()
         self.log = LogWidget()
 
         lay = QVBoxLayout(self)
         lay.addWidget(opts)
         lay.addLayout(btn_row)
+        lay.addLayout(prog_row)
         lay.addWidget(self.log, stretch=1)
 
     def _build_args(self):
@@ -783,6 +800,9 @@ class OrganizeTab(QWidget):
         if self._worker and self._worker.isRunning():
             return
         self.log.clear_log()
+        self.prog_bar.setRange(0, 0)
+        self.prog_bar.setValue(0)
+        self.prog_label.setText("Working...")
         args = self._build_args()
         out = Path(args.out)
         img_dir = out / "images"
@@ -794,6 +814,8 @@ class OrganizeTab(QWidget):
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._worker = Worker(fn)
+        args.progress = self._worker.progress.emit
+        self._worker.progress.connect(self._update_progress)
         self._worker.log.connect(self.log.append_line)
         self._worker.done.connect(self._on_done)
         self._worker.start()
@@ -805,9 +827,20 @@ class OrganizeTab(QWidget):
             self.log.append_line("\n[Stopped by user]")
             self._on_done(False, "")
 
+    def _update_progress(self, done, total, _=0):
+        if total > 0:
+            self.prog_bar.setRange(0, total)
+            self.prog_bar.setValue(done)
+            self.prog_label.setText("{:,} / {:,} files".format(done, total))
+        else:
+            self.prog_bar.setRange(0, 0)
+
     def _on_done(self, success, msg):
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.prog_bar.setRange(0, 1)
+        self.prog_bar.setValue(1 if success else 0)
+        self.prog_label.setText("Complete" if success else ("Error" if msg else "Stopped"))
         if not success and msg:
             self.log.append_line("\n[ERROR] " + msg)
 
@@ -882,11 +915,13 @@ class ConvertTab(QWidget):
         self.btn_run.clicked.connect(self._run_convert)
         self.btn_stop.clicked.connect(self._stop)
 
+        prog_row, self.prog_bar, self.prog_label = _make_progress_row()
         self.log = LogWidget()
 
         lay = QVBoxLayout(self)
         lay.addWidget(opts)
         lay.addLayout(btn_row)
+        lay.addLayout(prog_row)
         lay.addWidget(self.log, stretch=1)
 
         self.fmt_combo.currentIndexChanged.connect(self._on_fmt_change)
@@ -911,13 +946,26 @@ class ConvertTab(QWidget):
         if self._worker and self._worker.isRunning():
             return
         self.log.clear_log()
+        self.prog_bar.setRange(0, 0)
+        self.prog_bar.setValue(0)
+        self.prog_label.setText("Scanning...")
         args = self._build_args()
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._worker = Worker(core.cmd_convert_existing, args, Path(args.out))
+        args.progress = self._worker.progress.emit
+        self._worker.progress.connect(self._update_progress)
         self._worker.log.connect(self.log.append_line)
         self._worker.done.connect(self._on_done)
         self._worker.start()
+
+    def _update_progress(self, done, total, _=0):
+        if total > 0:
+            self.prog_bar.setRange(0, total)
+            self.prog_bar.setValue(done)
+            self.prog_label.setText("{:,} / {:,} files".format(done, total))
+        else:
+            self.prog_bar.setRange(0, 0)
 
     def _stop(self):
         if self._worker:
@@ -929,6 +977,9 @@ class ConvertTab(QWidget):
     def _on_done(self, success, msg):
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.prog_bar.setRange(0, 1)
+        self.prog_bar.setValue(1 if success else 0)
+        self.prog_label.setText("Complete" if success else ("Error" if msg else "Stopped"))
         if not success and msg:
             self.log.append_line("\n[ERROR] " + msg)
 
@@ -1036,6 +1087,9 @@ class UtilitiesTab(QWidget):
             "in your output folder (useful for spreadsheets or backup)."))
         lay.addLayout(export_row)
         lay.addLayout(delay_row)
+
+        prog_row, self.prog_bar, self.prog_label = _make_progress_row()
+        lay.addLayout(prog_row)
         lay.addWidget(self.log, stretch=1)
 
     def _base_args(self):
@@ -1060,11 +1114,21 @@ class UtilitiesTab(QWidget):
         self._worker.done.connect(self._on_done)
         self._worker.start()
 
-    def _run_probe(self):         self._run(core.run_probe,              self._base_args())
-    def _run_count(self):         self._run(core.run_count,              self._base_args())
-    def _run_stats(self):         self._run(core.run_catalog_stats,      self._base_args())
-    def _run_backfill(self):      self._run(core.run_backfill_meta,      self._base_args())
-    def _run_backfill_full(self): self._run(core.run_backfill_full_meta, self._base_args())
+    def _run_probe(self):   self._run(core.run_probe,         self._base_args())
+    def _run_count(self):   self._run(core.run_count,         self._base_args())
+    def _run_stats(self):   self._run(core.run_catalog_stats, self._base_args())
+
+    def _run_backfill(self):
+        args = self._base_args()
+        self._run(core.run_backfill_meta, args)
+        args.progress = self._worker.progress.emit
+        self._worker.progress.connect(self._update_progress)
+
+    def _run_backfill_full(self):
+        args = self._base_args()
+        self._run(core.run_backfill_full_meta, args)
+        args.progress = self._worker.progress.emit
+        self._worker.progress.connect(self._update_progress)
 
     def _run_export_csv(self):
         out = Path(self._bar.out)
@@ -1087,8 +1151,19 @@ class UtilitiesTab(QWidget):
             self.log.append_line("\n[Stopped by user]")
             self._set_running(False)
 
+    def _update_progress(self, done, total, _=0):
+        if total > 0:
+            self.prog_bar.setRange(0, total)
+            self.prog_bar.setValue(done)
+            self.prog_label.setText("{:,} / {:,} tasks".format(done, total))
+        else:
+            self.prog_bar.setRange(0, 0)
+
     def _on_done(self, success, msg):
         self._set_running(False)
+        self.prog_bar.setRange(0, 1)
+        self.prog_bar.setValue(1 if success else 0)
+        self.prog_label.setText("Complete" if success else ("Error" if msg else "Stopped"))
         if not success and msg:
             self.log.append_line("\n[ERROR] " + msg)
 
@@ -1097,6 +1172,9 @@ class UtilitiesTab(QWidget):
                   self.btn_backfill, self.btn_backfill_full, self.btn_export_csv):
             b.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if running:
+            self.prog_bar.setRange(0, 0)
+            self.prog_label.setText("Working...")
 
 
 # ---------------------------------------------------------------------------

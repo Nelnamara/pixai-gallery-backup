@@ -662,7 +662,9 @@ def cmd_convert_existing(args, out):
         return
 
     ok = failed = 0
-    for p in webp_files:
+    total = len(webp_files)
+    _prog = getattr(args, "progress", None)
+    for i, p in enumerate(webp_files):
         _, note = convert_image(p, target, args.jpeg_quality, args.jpeg_bg,
                                 keep_original=args.keep_webp)
         if note == "pillow-missing":
@@ -672,6 +674,12 @@ def cmd_convert_existing(args, out):
         else:
             print("  FAILED {}: {}".format(p.name, note))
             failed += 1
+        if _prog:
+            _prog(i + 1, total, 0)
+        else:
+            sys.stdout.write("\r  {:,}/{:,}  ok {:,}  failed {:,}  ".format(
+                i + 1, total, ok, failed))
+            sys.stdout.flush()
 
     print("\nConverted: {}, failed: {}.".format(ok, failed))
     if failed:
@@ -744,8 +752,9 @@ def cmd_organize(args, out, img_dir, db_path):
         return
 
     catalog_updates = {}  # media_id -> (new filename, batch name)
+    _prog = getattr(args, "progress", None)
 
-    for src, dst, is_batch, mid, row in plan:
+    for n, (src, dst, is_batch, mid, row) in enumerate(plan):
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists() and dst.resolve() != src.resolve():
             skipped += 1
@@ -808,6 +817,16 @@ def cmd_organize(args, out, img_dir, db_path):
                 "created_at": row.get("created_at", ""),
                 "status": row.get("status", ""),
             })
+
+        if _prog:
+            _prog(n + 1, len(plan), 0)
+        else:
+            sys.stdout.write("\r  {:,}/{:,}  moved {:,}  skip {:,}  ".format(
+                n + 1, len(plan), moved, skipped))
+            sys.stdout.flush()
+
+    if not _prog:
+        print()  # newline after \r output
 
     # write per-batch _prompt.txt
     for folder, lines in batch_txt.items():
@@ -1001,6 +1020,7 @@ def run_backfill_meta(args):
         return
 
     updated = failed = 0
+    _prog = getattr(args, "progress", None)
     for i, row in enumerate(to_fill):
         url, info = resolve_media(session, row["media_id"])
         if url:
@@ -1010,9 +1030,12 @@ def run_backfill_meta(args):
             updated += 1
         else:
             failed += 1
-        sys.stdout.write("\r  {:,}/{:,}  updated {:,}  failed {:,}  ".format(
-            i + 1, len(to_fill), updated, failed))
-        sys.stdout.flush()
+        if _prog:
+            _prog(i + 1, len(to_fill), 0)
+        else:
+            sys.stdout.write("\r  {:,}/{:,}  updated {:,}  failed {:,}  ".format(
+                i + 1, len(to_fill), updated, failed))
+            sys.stdout.flush()
         time.sleep(args.delay)
 
     print("\nWriting catalog...")
@@ -1048,6 +1071,7 @@ def run_backfill_full_meta(args):
     # Fetch and cache full meta per task_id
     task_cache = {}  # task_id -> full meta dict
     fetched = failed = 0
+    _prog = getattr(args, "progress", None)
     for i, tid in enumerate(task_ids):
         task_data = task_detail_gql(session, tid)
         fm = extract_full_meta(task_data)
@@ -1072,9 +1096,12 @@ def run_backfill_full_meta(args):
             fetched += 1
         else:
             failed += 1
-        sys.stdout.write("\r  Tasks {:,}/{:,}  fetched {:,}  failed {:,}  ".format(
-            i + 1, len(task_ids), fetched, failed))
-        sys.stdout.flush()
+        if _prog:
+            _prog(i + 1, len(task_ids), 0)
+        else:
+            sys.stdout.write("\r  Tasks {:,}/{:,}  fetched {:,}  failed {:,}  ".format(
+                i + 1, len(task_ids), fetched, failed))
+            sys.stdout.flush()
         time.sleep(args.delay)
 
     print("\nApplying to {:,} catalog rows...".format(len(rows)))
