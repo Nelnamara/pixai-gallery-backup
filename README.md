@@ -336,6 +336,13 @@ python pixai_gallery_backup.py --backfill-full-meta
 
 ## Changelog
 
+### Unreleased
+
+- **Gallery LAN mode** — optional bind to `0.0.0.0` so you can browse the gallery from other devices on your network
+- **Progress bars** on the GUI Organize, Convert, and Utilities tabs, with matching CLI counters for organize/convert runs
+- **Auto-load `token.txt`** on GUI startup; the Load button uses it directly when present
+- Fixed an `UnboundLocalError` when running with `--full-meta` (initialization moved before first reference)
+
 ### v1.1.0 — SQLite catalog, gallery performance, batch filter, focus mode
 
 - **SQLite catalog** — `catalog.csv` replaced by `catalog.db`; faster indexed queries, crash-safe upserts, no corruption on large libraries; existing `catalog.csv` auto-migrated on first run; `--export-csv` for interop backup
