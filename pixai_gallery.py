@@ -227,6 +227,10 @@ _SORT_SQL = {
     "model":       "LOWER(COALESCE(NULLIF(model_name,''), NULLIF(model_id,''), '')) ASC",
     "width":       "CAST(COALESCE(NULLIF(width,''),'0')  AS INTEGER) DESC",
     "height":      "CAST(COALESCE(NULLIF(height,''),'0') AS INTEGER) DESC",
+    "pixels":      "(CAST(COALESCE(NULLIF(width,''),'0') AS INTEGER) * "
+                   "CAST(COALESCE(NULLIF(height,''),'0') AS INTEGER)) DESC",
+    "aspect":      "(CAST(COALESCE(NULLIF(width,''),'0') AS REAL) / "
+                   "NULLIF(CAST(COALESCE(NULLIF(height,''),'0') AS REAL),0)) DESC",
 }
 _DEFAULT_SORT_SQL = "created_at DESC"
 
@@ -247,10 +251,13 @@ def _like_pattern(term):
     return t if has_wild else "%" + t + "%"
 
 
-def _build_where(q, model, date_from, date_to, batch=""):
+def _build_where(q, model, date_from, date_to, batch="", rating_min=0):
     """Return (where_clause, params) for the common filter set."""
     clauses = ["filename != ''"]
     params  = []
+    if rating_min:
+        clauses.append("CAST(COALESCE(NULLIF(rating,''),'0') AS INTEGER) >= ?")
+        params.append(int(rating_min))
     if q:
         # Whitespace-separated terms are ANDed; each may use * / ? wildcards.
         for term in q.split():
@@ -284,9 +291,9 @@ def get_row(db_path, media_id):
 
 
 def query_catalog(db_path, q="", model="", date_from="", date_to="",
-                  sort="newest", page=1, page_size=100, batch=""):
+                  sort="newest", page=1, page_size=100, batch="", rating_min=0):
     """Return (rows, total) with filtering, sorting and pagination done in SQL."""
-    where, params = _build_where(q, model, date_from, date_to, batch)
+    where, params = _build_where(q, model, date_from, date_to, batch, rating_min)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     offset = (max(1, page) - 1) * page_size
     con = _connect(db_path)
@@ -303,9 +310,10 @@ def query_catalog(db_path, q="", model="", date_from="", date_to="",
         con.close()
 
 
-def list_media_ids(db_path, q="", model="", date_from="", date_to="", sort="newest", batch=""):
+def list_media_ids(db_path, q="", model="", date_from="", date_to="", sort="newest",
+                   batch="", rating_min=0):
     """Return ordered list of media_ids matching the filter (no row data)."""
-    where, params = _build_where(q, model, date_from, date_to, batch)
+    where, params = _build_where(q, model, date_from, date_to, batch, rating_min)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     con = _connect(db_path)
     try:
@@ -389,6 +397,117 @@ def catalog_years(db_path):
         return [int(r[0]) for r in rows if str(r[0]).isdigit()]
     finally:
         con.close()
+
+
+def _fmt_size(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return "{:.1f} {}".format(n, unit)
+        n /= 1024
+
+
+def collection_health(out_dir, db_path):
+    """Compute at-a-glance metrics for the health dashboard. One disk walk
+    (sizes + buckets + Class-A duplicate detection) plus a few catalog queries.
+
+    Returns a dict consumed by the /health route. Cheap (no content hashing) so
+    it's safe to render on every page load.
+    """
+    from collections import defaultdict, Counter
+    gallery_dir = out_dir / "gallery"
+    quarantine_dir = out_dir / "_duplicates"
+
+    def _under(p, parent):
+        try:
+            p.relative_to(parent); return True
+        except ValueError:
+            return False
+
+    per_bucket = Counter()
+    total_files = 0
+    total_bytes = 0
+    on_disk_ids = set()
+    locs = defaultdict(set)   # media_id -> set of bucket names (Class A dup detection)
+    dup_redundant = 0
+    dup_bytes = 0
+    mid_sizes = defaultdict(list)  # media_id -> [sizes] to estimate reclaimable
+
+    for p in out_dir.rglob("*"):
+        if p.suffix.lower() not in _IMAGE_EXTS or not p.is_file():
+            continue
+        if p.name.endswith(".part") or _under(p, gallery_dir) or _under(p, quarantine_dir):
+            continue
+        rel = p.relative_to(out_dir)
+        top = str(rel).replace("\\", "/").split("/")[0]
+        if top == "images":
+            bucket = "images"
+        elif top == "batches":
+            bucket = "batches"
+        elif top == "unknown-date" or (len(top) == 7 and top[4] == "-" and top[:4].isdigit()):
+            bucket = "month"
+        else:
+            bucket = "other"
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            continue
+        total_files += 1
+        total_bytes += sz
+        per_bucket[bucket] += 1
+        mid = media_id_of(p)
+        on_disk_ids.add(mid)
+        locs[mid].add(bucket)
+        mid_sizes[mid].append(sz)
+
+    for mid, buckets in locs.items():
+        if len(buckets) > 1:
+            extra = len(mid_sizes[mid]) - 1
+            dup_redundant += extra
+            sizes = sorted(mid_sizes[mid])
+            dup_bytes += sum(sizes[:-1])  # all but the largest counted as reclaimable
+
+    con = _connect(db_path)
+    try:
+        def _scalar(sql):
+            return con.execute(sql).fetchone()[0]
+        total_rows   = _scalar("SELECT COUNT(*) FROM catalog")
+        with_image   = _scalar("SELECT COUNT(*) FROM catalog WHERE filename != ''")
+        with_full    = _scalar("SELECT COUNT(*) FROM catalog WHERE COALESCE(prompt_full,'') != ''")
+        rated        = _scalar("SELECT COUNT(*) FROM catalog "
+                               "WHERE COALESCE(NULLIF(rating,''),'0') NOT IN ('0')")
+        by_month = con.execute(
+            "SELECT SUBSTR(created_at,1,7) AS m, COUNT(*) FROM catalog "
+            "WHERE created_at != '' GROUP BY m ORDER BY m"
+        ).fetchall()
+        top_models = con.execute(
+            "SELECT COALESCE(NULLIF(model_name,''), NULLIF(model_id,''), 'unknown') AS mdl, "
+            "COUNT(*) AS c FROM catalog WHERE filename != '' GROUP BY mdl ORDER BY c DESC LIMIT 8"
+        ).fetchall()
+        # catalog rows that claim a file but whose media_id isn't on disk
+        cat_ids = [r[0] for r in con.execute(
+            "SELECT media_id FROM catalog WHERE filename != ''").fetchall()]
+    finally:
+        con.close()
+
+    missing = sum(1 for mid in cat_ids if mid and mid not in on_disk_ids)
+
+    return {
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "total_size_h": _fmt_size(total_bytes),
+        "per_bucket": dict(per_bucket),
+        "dup_redundant": dup_redundant,
+        "dup_bytes": dup_bytes,
+        "dup_bytes_h": _fmt_size(dup_bytes),
+        "catalog_rows": total_rows,
+        "with_image": with_image,
+        "with_full_meta": with_full,
+        "full_meta_pct": round(100 * with_full / with_image) if with_image else 0,
+        "rated": rated,
+        "missing": missing,
+        "by_month": [(m, c) for (m, c) in by_month],
+        "top_models": [(m, c) for (m, c) in top_models],
+    }
 
 
 def media_id_of(path):
@@ -522,27 +641,38 @@ def create_app(out_dir: Path):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PixAI Gallery</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23cba6f7'/%3E%3Cpath d='M9 22V10h6a4 4 0 0 1 0 8h-3' stroke='%231e1e2e' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='11' r='2.2' fill='%23d4af37'/%3E%3C/svg%3E">
 <style>
   :root {
-    --base:    #1e1e2e; --mantle:  #181825; --surface0:#313244;
-    --surface1:#45475a; --overlay0:#6c7086; --text:    #cdd6f4;
-    --subtext: #a6adc8; --lavender:#b4befe; --mauve:   #cba6f7;
-    --red:     #f38ba8; --peach:   #fab387; --green:   #a6e3a1;
-    --blue:    #89b4fa; --sapphire:#74c7ec;
+    /* Palette sampled from two reference images:
+       731004762264180451.webp — teal "magic glow", green gems, rare gold trim.
+       s1_06.png              — the deep violet armor (#33236d/#241f5b/#36345a/#643aac)
+                                that tints the ground and surfaces below. */
+    --base:    #0c0a1c; --mantle:  #0a0818; --surface0:#211f3a;
+    --surface1:#3a3460; --overlay0:#6a6088; --text:    #d6d2e2;
+    --subtext: #9a93ab; --lavender:#b692e6; --mauve:   #c4a6f0;
+    --red:     #f38ba8; --peach:   #fab387; --green:   #46d488;
+    --blue:    #47cbc3; --sapphire:#3a8a93;
+    /* Accent system: purple leads, teal is the "magic" highlight, gold is rare. */
+    --accent:  #b692e6; --accent-soft:#47cbc3; --gold: #d4af37;
+    --purple-deep: #33236d; --purple-bright: #643aac;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--base); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; }
 
   /* Header */
-  header { background: var(--mantle); padding: 12px 20px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid var(--surface0); position: sticky; top: 0; z-index: 100; }
-  header h1 { font-size: 18px; color: var(--lavender); flex-shrink: 0; }
+  header { background: var(--mantle); padding: 12px 20px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--surface0); position: sticky; top: 0; z-index: 100; }
+  .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .brand .mark { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); display: flex; align-items: center; justify-content: center; color: var(--base); font-weight: 700; font-size: 15px; position: relative; }
+  .brand .mark::after { content: ''; position: absolute; top: 5px; right: 5px; width: 4px; height: 4px; border-radius: 50%; background: var(--gold); }
+  header h1 { font-size: 18px; color: var(--text); flex-shrink: 0; font-weight: 600; border-bottom: 2px solid var(--gold); padding-bottom: 1px; line-height: 1.1; }
   .header-stats { color: var(--subtext); font-size: 12px; }
 
   /* Filters */
   .filters { background: var(--mantle); padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-bottom: 1px solid var(--surface0); }
   .filters input, .filters select { background: var(--surface0); color: var(--text); border: 1px solid var(--surface1); border-radius: 6px; padding: 5px 10px; font-size: 13px; }
   .filters input { width: 280px; }
-  .filters input:focus, .filters select:focus { outline: none; border-color: var(--lavender); }
+  .filters input:focus, .filters select:focus { outline: none; border-color: var(--accent-soft); box-shadow: 0 0 0 2px rgba(71,203,195,.25); }
   .filters label { color: var(--subtext); font-size: 12px; }
   .btn { background: var(--surface0); color: var(--text); border: 1px solid var(--surface1); border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
   .btn:hover { background: var(--surface1); }
@@ -551,16 +681,37 @@ def create_app(out_dir: Path):
   .btn-primary { background: var(--lavender); color: var(--base); border-color: var(--lavender); font-weight: 600; }
   .btn-primary:hover { opacity: 0.85; }
 
+  /* Active-filter chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 20px 0; align-items: center; }
+  .chips .chips-label { color: var(--overlay0); font-size: 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface0); border: 1px solid var(--surface1); border-left: 3px solid var(--gold); border-radius: 4px; padding: 3px 8px; font-size: 12px; color: var(--text); }
+  .chip .k { color: var(--subtext); }
+  .chip a { color: var(--overlay0); text-decoration: none; font-weight: 700; padding-left: 2px; }
+  .chip a:hover { color: var(--red); }
+  .chips .clear-all { color: var(--accent-soft); font-size: 12px; text-decoration: none; }
+  .chips .clear-all:hover { text-decoration: underline; }
+
   /* Bulk toolbar */
   .bulk-bar { background: var(--surface0); padding: 8px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--surface1); min-height: 40px; }
   .bulk-bar span { color: var(--subtext); font-size: 13px; }
-  #sel-count { color: var(--peach); font-weight: 600; }
+  #sel-count { color: var(--gold); font-weight: 600; }
+
+  /* Thumbnail loading skeleton */
+  @keyframes shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
+  .card img { background-image: linear-gradient(90deg, var(--surface0) 0px, var(--surface1) 100px, var(--surface0) 200px); background-size: 400px 100%; animation: shimmer 1.2s infinite linear; }
+  .card img.loaded { animation: none; background: var(--surface0); }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 64px 20px; color: var(--subtext); }
+  .empty .big { font-size: 40px; margin-bottom: 8px; color: var(--overlay0); }
+  .empty a { color: var(--accent-soft); text-decoration: none; }
+  .empty a:hover { text-decoration: underline; }
 
   /* Grid */
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; padding: 16px 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb, 200px), 1fr)); gap: 12px; padding: 16px 20px; }
   .card { background: var(--mantle); border-radius: 8px; overflow: hidden; border: 2px solid transparent; transition: border-color .15s; position: relative; cursor: pointer; }
   .card:hover { border-color: var(--surface1); }
-  .card.selected { border-color: var(--lavender); }
+  .card.selected { border-color: var(--purple-bright); box-shadow: 0 0 0 1px var(--purple-bright); }
   .card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--surface0); }
   .card .no-thumb { width: 100%; aspect-ratio: 1; background: var(--surface0); display: flex; align-items: center; justify-content: center; color: var(--overlay0); font-size: 11px; }
   .card .meta { padding: 6px 8px; }
@@ -710,8 +861,9 @@ document.addEventListener('DOMContentLoaded', function() {
   </select>
 {% endmacro %}
 <header>
-  <h1>PixAI Gallery</h1>
-  <span class="header-stats">{{ total }} images</span>
+  <div class="brand"><span class="mark">P</span><h1>PixAI Gallery</h1></div>
+  <span class="header-stats">{{ '{:,}'.format(total) }} images</span>
+  <a class="back-link" href="{{ url_for('health') }}" style="margin-left:auto;">Collection health →</a>
 </header>
 
 <form method="get" action="/" id="filter-form">
@@ -748,6 +900,15 @@ document.addEventListener('DOMContentLoaded', function() {
     {{ date_select('to', date_to, years) }}
   </div>
   <div>
+    <label>Min rating</label><br>
+    <select name="rating_min">
+      <option value="0" {% if rating_min==0 %}selected{% endif %}>Any</option>
+      {% for r in [1,2,3,4,5] %}
+      <option value="{{ r }}" {% if rating_min==r %}selected{% endif %}>{{ '★' * r }}+</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
     <label>Per page</label><br>
     <select name="per_page">
       {% for n in per_page_opts %}
@@ -763,9 +924,16 @@ document.addEventListener('DOMContentLoaded', function() {
       <option value="rating_desc" {% if sort=='rating_desc' %}selected{% endif %}>Rating ↓</option>
       <option value="rating_asc"  {% if sort=='rating_asc' %}selected{% endif %}>Rating ↑</option>
       <option value="model"       {% if sort=='model' %}selected{% endif %}>Model name</option>
+      <option value="pixels"      {% if sort=='pixels' %}selected{% endif %}>Resolution ↓</option>
+      <option value="aspect"      {% if sort=='aspect' %}selected{% endif %}>Aspect (wide→tall)</option>
       <option value="width"       {% if sort=='width' %}selected{% endif %}>Width ↓</option>
       <option value="height"      {% if sort=='height' %}selected{% endif %}>Height ↓</option>
     </select>
+  </div>
+  <div>
+    <label>Thumb size</label><br>
+    <input type="range" id="thumb-size" min="120" max="320" step="20" value="200"
+           title="Thumbnail size" style="width:110px;vertical-align:middle">
   </div>
   <div style="align-self:flex-end">
     <button type="submit" class="btn btn-primary">Filter</button>
@@ -773,6 +941,17 @@ document.addEventListener('DOMContentLoaded', function() {
   </div>
 </div>
 </form>
+
+{% if chips %}
+<div class="chips">
+  <span class="chips-label">Active:</span>
+  {% for c in chips %}
+  <span class="chip"><span class="k">{{ c.k }}:</span> {{ c.v }}
+    <a href="{{ c.url }}" title="Remove this filter">×</a></span>
+  {% endfor %}
+  <a class="clear-all" href="{{ url_for('index') }}">Clear all</a>
+</div>
+{% endif %}
 
 <div class="bulk-bar">
   <button class="btn" onclick="selectAll()">Select All</button>
@@ -794,6 +973,7 @@ document.addEventListener('DOMContentLoaded', function() {
       <a class="cover" href="{{ url_for('detail', media_id=row.media_id, back=current_url) }}"></a>
       {% if row._has_thumb %}
       <img src="{{ url_for('thumb', media_id=row.media_id) }}" loading="lazy"
+           onload="this.classList.add('loaded')"
            alt="{{ row.prompt_preview[:60] }}">
       {% else %}
       <div class="no-thumb">no preview</div>
@@ -810,7 +990,11 @@ document.addEventListener('DOMContentLoaded', function() {
 </form>
 
 {% if not rows %}
-<div class="empty">No images match your filters.</div>
+<div class="empty">
+  <div class="big">⌕</div>
+  <div>No images match your filters.</div>
+  {% if chips %}<div style="margin-top:8px;font-size:13px;">Try <a href="{{ url_for('index') }}">clearing all filters</a> or widening the date range.</div>{% endif %}
+</div>
 {% endif %}
 
 <div class="pagination">
@@ -834,6 +1018,18 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 <script>
+(function(){
+  var grid = document.querySelector('.grid');
+  var slider = document.getElementById('thumb-size');
+  if (grid && slider) {
+    var saved = localStorage.getItem('gallery_thumb');
+    if (saved) { slider.value = saved; grid.style.setProperty('--thumb', saved + 'px'); }
+    slider.addEventListener('input', function(){
+      grid.style.setProperty('--thumb', slider.value + 'px');
+      localStorage.setItem('gallery_thumb', slider.value);
+    });
+  }
+})();
 function onCheck() {
   const checked = document.querySelectorAll('input[name=media_ids]:checked');
   document.getElementById('sel-count').textContent = checked.length;
@@ -962,12 +1158,105 @@ document.addEventListener('DOMContentLoaded', function() {
     {% if row.url %}
     <a class="btn" href="{{ row.url }}" target="_blank">Open on PixAI CDN</a>
     {% endif %}
+    {% set _prompt = row.prompt_full or row.prompt_preview or '' %}
+    {% if _prompt %}
+    <button class="btn" id="copy-prompt-btn"
+      data-prompt="{{ _prompt|e }}" onclick="copyPrompt(this)">Copy Prompt</button>
+    {% endif %}
+    {% if row.model_name %}
+    <a class="btn" href="{{ url_for('index', model=row.model_name) }}"
+       title="Show all images from this model">Find Similar (model)</a>
+    {% endif %}
+    {% if row.batch %}
+    <a class="btn" href="{{ url_for('index', batch=row.batch) }}"
+       title="Show the rest of this batch">View Batch</a>
+    {% endif %}
     <button class="btn btn-danger"
       onclick="confirmDelete('{{ url_for('delete_one', media_id=row.media_id) }}?back={{ back|urlencode }}',
         'Permanently delete this image? This cannot be undone.')">
       Delete
     </button>
   </div>
+</div>
+<script>
+function copyPrompt(btn) {
+  var text = btn.getAttribute('data-prompt');
+  navigator.clipboard.writeText(text).then(function(){
+    var old = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(function(){ btn.textContent = old; }, 1200);
+  });
+}
+</script>
+""")
+
+    HEALTH_HTML = BASE_HTML.replace("{% block body %}{% endblock %}", """
+{% macro stat(label, value, flag='') %}
+<div style="background:var(--mantle);border-radius:8px;padding:14px 16px;">
+  <div style="font-size:12px;color:var(--subtext);margin-bottom:6px;">{{ label }}</div>
+  <div style="font-size:22px;font-weight:500;color:{{ '#e2a04a' if flag=='warn' else ('#e25555' if flag=='bad' else 'var(--text)') }};">{{ value }}</div>
+</div>
+{% endmacro %}
+<header>
+  <div class="brand"><span class="mark">P</span><h1>Collection Health</h1></div>
+  <a class="back-link" href="{{ url_for('index') }}" style="margin-left:auto;">↑ Back to gallery</a>
+</header>
+
+<div style="padding:8px 20px 24px;max-width:1100px;">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
+    {{ stat('Images on disk', '{:,}'.format(h.total_files)) }}
+    {{ stat('Storage used', h.total_size_h) }}
+    {{ stat('Catalog rows', '{:,}'.format(h.catalog_rows)) }}
+    {{ stat('Full-meta', h.full_meta_pct|string + '%') }}
+    {{ stat('Rated', '{:,}'.format(h.rated)) }}
+    {{ stat('Duplicates', '{:,}'.format(h.dup_redundant), 'warn' if h.dup_redundant else '') }}
+    {{ stat('Reclaimable', h.dup_bytes_h, 'warn' if h.dup_bytes else '') }}
+    {{ stat('Missing files', '{:,}'.format(h.missing), 'bad' if h.missing else '') }}
+  </div>
+
+  <h2 style="margin:28px 0 10px;font-size:16px;">Images by month</h2>
+  <div style="display:flex;flex-direction:column;gap:4px;">
+    {% set maxm = (h.by_month|map(attribute=1)|max) if h.by_month else 1 %}
+    {% for m, c in h.by_month %}
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+      <span style="width:64px;color:var(--subtext);">{{ m }}</span>
+      <div style="flex:1;background:var(--mantle);border-radius:4px;overflow:hidden;height:16px;">
+        <div style="height:100%;width:{{ (100*c/maxm)|round(1) }}%;background:var(--accent);"></div>
+      </div>
+      <span style="width:52px;text-align:right;color:var(--subtext);">{{ '{:,}'.format(c) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 style="margin:28px 0 10px;font-size:16px;">Top models</h2>
+  <div style="display:flex;flex-direction:column;gap:4px;">
+    {% set maxt = (h.top_models|map(attribute=1)|max) if h.top_models else 1 %}
+    {% for name, c in h.top_models %}
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+      <span style="width:180px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+            title="{{ name }}">{{ name }}</span>
+      <div style="flex:1;background:var(--mantle);border-radius:4px;overflow:hidden;height:16px;">
+        <div style="height:100%;width:{{ (100*c/maxt)|round(1) }}%;background:var(--accent-soft);"></div>
+      </div>
+      <a style="width:52px;text-align:right;color:var(--subtext);"
+         href="{{ url_for('index', model=name) }}">{{ '{:,}'.format(c) }}</a>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 style="margin:28px 0 10px;font-size:16px;">Folder breakdown</h2>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--subtext);">
+    {% for b, c in h.per_bucket.items() %}
+    <span><strong style="color:var(--text);">{{ '{:,}'.format(c) }}</strong> {{ b }}</span>
+    {% endfor %}
+  </div>
+
+  {% if h.dup_redundant or h.missing %}
+  <div style="margin-top:24px;padding:12px 16px;background:var(--mantle);border-radius:8px;font-size:13px;color:var(--subtext);">
+    {% if h.dup_redundant %}<div>· {{ '{:,}'.format(h.dup_redundant) }} duplicate copies ({{ h.dup_bytes_h }}). Run <code>--dedup</code> to quarantine.</div>{% endif %}
+    {% if h.missing %}<div>· {{ '{:,}'.format(h.missing) }} catalog rows reference a file that's missing on disk. Re-run a download to refetch.</div>{% endif %}
+  </div>
+  {% endif %}
 </div>
 """)
 
@@ -991,6 +1280,11 @@ document.addEventListener('DOMContentLoaded', function() {
     # ------------------------------------------------------------------
     # Routes
     # ------------------------------------------------------------------
+    @app.route("/health")
+    def health():
+        return render_template_string(
+            HEALTH_HTML, h=collection_health(out_dir, db_path))
+
     @app.route("/")
     def index():
         q            = request.args.get("q", "")
@@ -1018,12 +1312,17 @@ document.addEventListener('DOMContentLoaded', function() {
         if per_page not in per_page_opts:
             per_page = PAGE_SIZE
 
+        try:
+            rating_min = max(0, min(5, int(request.args.get("rating_min", 0))))
+        except ValueError:
+            rating_min = 0
+
         models  = unique_models(db_path)
         batches = unique_batches(db_path)
         years   = catalog_years(db_path)
         page_rows, total = query_catalog(
             db_path, q, model_filter, date_from, date_to, sort, page, per_page,
-            batch=batch_filter,
+            batch=batch_filter, rating_min=rating_min,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
@@ -1036,14 +1335,39 @@ document.addEventListener('DOMContentLoaded', function() {
             args["page"] = p
             return url_for("index", **args)
 
+        def _without(*keys):
+            args = {k: v for k, v in request.args.items() if k not in keys}
+            args.pop("page", None)
+            return url_for("index", **args)
+
+        # Active-filter chips (label + a URL that removes just that filter).
+        chips = []
+        if q:
+            chips.append({"k": "search", "v": q, "url": _without("q")})
+        if model_filter:
+            chips.append({"k": "model", "v": model_filter, "url": _without("model")})
+        if batch_filter:
+            chips.append({"k": "batch", "v": batch_filter, "url": _without("batch")})
+        if rating_min:
+            chips.append({"k": "rating", "v": "★" * rating_min + "+",
+                          "url": _without("rating_min")})
+        if date_from:
+            chips.append({"k": "from", "v": date_from,
+                          "url": _without("from_year", "from_month")})
+        if date_to:
+            chips.append({"k": "to", "v": date_to,
+                          "url": _without("to_year", "to_month")})
+
         return render_template_string(
             INDEX_HTML,
+            chips=chips,
             rows=page_rows, total=total, page=page,
             total_pages=total_pages, page_range=_page_range(page, total_pages),
             q=q, model_filter=model_filter, batch_filter=batch_filter,
             date_from=date_from,
             date_to=date_to, sort=sort, models=models, batches=batches,
             years=years, per_page=per_page, per_page_opts=per_page_opts,
+            rating_min=rating_min,
             page_url=page_url, request=request,
             current_url=request.url,
         )
@@ -1073,11 +1397,15 @@ document.addEventListener('DOMContentLoaded', function() {
         def _ym(prefix, month_default):
             y = _qs1(prefix + "_year")
             return "{}-{}".format(y, _qs1(prefix + "_month") or month_default) if y else ""
+        try:
+            _rmin = max(0, min(5, int(_qs1("rating_min", "0"))))
+        except ValueError:
+            _rmin = 0
         nav_ids = list_media_ids(
             db_path,
             q=_qs1("q"), model=_qs1("model"),
             date_from=_ym("from", "01"), date_to=_ym("to", "12"),
-            sort=_qs1("sort", "newest"), batch=_qs1("batch"),
+            sort=_qs1("sort", "newest"), batch=_qs1("batch"), rating_min=_rmin,
         )
         try:
             idx = nav_ids.index(media_id)
