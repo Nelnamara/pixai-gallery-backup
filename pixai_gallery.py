@@ -231,14 +231,33 @@ _SORT_SQL = {
 _DEFAULT_SORT_SQL = "created_at DESC"
 
 
+def _like_pattern(term):
+    r"""Translate a user search term into a SQL LIKE pattern.
+
+    * `*` -> `%` (any run) and `?` -> `_` (single char), so `night*` matches
+      anything starting with "night".
+    * A term with NO wildcard is treated as a substring (wrapped in `%...%`),
+      preserving the old broad-search behavior.
+    * Literal `%`/`_`/`\` the user typed are escaped (LIKE uses ESCAPE '\').
+    """
+    t = term.strip().lower()
+    has_wild = "*" in t or "?" in t
+    t = t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    t = t.replace("*", "%").replace("?", "_")
+    return t if has_wild else "%" + t + "%"
+
+
 def _build_where(q, model, date_from, date_to, batch=""):
     """Return (where_clause, params) for the common filter set."""
     clauses = ["filename != ''"]
     params  = []
     if q:
-        clauses.append("(LOWER(COALESCE(prompt_full,'')) LIKE ? OR LOWER(COALESCE(prompt_preview,'')) LIKE ?)")
-        like = "%" + q.strip().lower() + "%"
-        params += [like, like]
+        # Whitespace-separated terms are ANDed; each may use * / ? wildcards.
+        for term in q.split():
+            clauses.append("(LOWER(COALESCE(prompt_full,'')) LIKE ? ESCAPE '\\' "
+                           "OR LOWER(COALESCE(prompt_preview,'')) LIKE ? ESCAPE '\\')")
+            like = _like_pattern(term)
+            params += [like, like]
     if model:
         clauses.append("model_name = ?")
         params.append(model)
@@ -354,6 +373,20 @@ def unique_batches(db_path):
             "SELECT DISTINCT batch FROM catalog WHERE batch != '' ORDER BY batch"
         ).fetchall()
         return [r[0] for r in rows]
+    finally:
+        con.close()
+
+
+def catalog_years(db_path):
+    """Descending list of years (ints) present in catalog created_at, for the
+    date-filter dropdowns. Empty if the catalog has no dated rows."""
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT SUBSTR(created_at,1,4) AS y FROM catalog "
+            "WHERE created_at != '' AND y != '' ORDER BY y DESC"
+        ).fetchall()
+        return [int(r[0]) for r in rows if str(r[0]).isdigit()]
     finally:
         con.close()
 
@@ -660,6 +693,22 @@ document.addEventListener('DOMContentLoaded', function() {
 """
 
     INDEX_HTML = BASE_HTML.replace("{% block body %}{% endblock %}", """
+{% macro date_select(prefix, value, years) %}
+  {% set yr = value[:4] %}{% set mo = value[5:7] %}
+  <select name="{{ prefix }}_year" style="width:78px">
+    <option value="">Year</option>
+    {% for y in years %}
+    <option value="{{ y }}" {% if value and y|string == yr %}selected{% endif %}>{{ y }}</option>
+    {% endfor %}
+  </select>
+  <select name="{{ prefix }}_month" style="width:64px">
+    <option value="">Mon</option>
+    {% for mnum in range(1, 13) %}
+    {% set mm = '%02d'|format(mnum) %}
+    <option value="{{ mm }}" {% if mm == mo %}selected{% endif %}>{{ mm }}</option>
+    {% endfor %}
+  </select>
+{% endmacro %}
 <header>
   <h1>PixAI Gallery</h1>
   <span class="header-stats">{{ total }} images</span>
@@ -669,35 +718,42 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="filters">
   <div>
     <label>Prompt</label><br>
-    <input type="text" name="q" value="{{ q }}" placeholder="search prompt...">
+    <input type="text" name="q" value="{{ q }}" placeholder="words, night* wildcard…"
+           title="Multiple words are ANDed. Use * (any) and ? (one char), e.g. night* elf">
   </div>
   <div>
     <label>Model</label><br>
-    <select name="model">
-      <option value="">All models</option>
-      {% for m in models %}
-      <option value="{{ m }}" {% if m == model_filter %}selected{% endif %}>{{ m }}</option>
-      {% endfor %}
-    </select>
+    <input type="text" name="model" value="{{ model_filter }}" list="models-list"
+           placeholder="All models — type to search" autocomplete="off" style="width:200px">
+    <datalist id="models-list">
+      {% for m in models %}<option value="{{ m }}">{% endfor %}
+    </datalist>
   </div>
   {% if batches %}
   <div>
     <label>Batch</label><br>
-    <select name="batch">
-      <option value="">All batches</option>
-      {% for b in batches %}
-      <option value="{{ b }}" {% if b == batch_filter %}selected{% endif %}>{{ b }}</option>
-      {% endfor %}
-    </select>
+    <input type="text" name="batch" value="{{ batch_filter }}" list="batches-list"
+           placeholder="All batches — type to search" autocomplete="off" style="width:200px">
+    <datalist id="batches-list">
+      {% for b in batches %}<option value="{{ b }}">{% endfor %}
+    </datalist>
   </div>
   {% endif %}
   <div>
     <label>From</label><br>
-    <input type="month" name="date_from" value="{{ date_from }}" style="width:140px">
+    {{ date_select('from', date_from, years) }}
   </div>
   <div>
     <label>To</label><br>
-    <input type="month" name="date_to" value="{{ date_to }}" style="width:140px">
+    {{ date_select('to', date_to, years) }}
+  </div>
+  <div>
+    <label>Per page</label><br>
+    <select name="per_page">
+      {% for n in per_page_opts %}
+      <option value="{{ n }}" {% if n == per_page %}selected{% endif %}>{{ n }}</option>
+      {% endfor %}
+    </select>
   </div>
   <div>
     <label>Sort</label><br>
@@ -940,18 +996,36 @@ document.addEventListener('DOMContentLoaded', function() {
         q            = request.args.get("q", "")
         model_filter = request.args.get("model", "")
         batch_filter = request.args.get("batch", "")
-        date_from    = request.args.get("date_from", "")
-        date_to      = request.args.get("date_to", "")
         sort         = request.args.get("sort", "newest")
         page         = int(request.args.get("page", 1))
 
+        # Date filters come from Year+Month dropdowns and assemble into YYYY-MM.
+        # A year with no month still filters by year (month defaults to 01/12).
+        def _ym(prefix, month_default):
+            y = request.args.get(prefix + "_year", "")
+            m = request.args.get(prefix + "_month", "")
+            if not y:
+                return ""
+            return "{}-{}".format(y, m or month_default)
+        date_from = _ym("from", "01")
+        date_to   = _ym("to", "12")
+
+        per_page_opts = [50, 100, 200, 500]
+        try:
+            per_page = int(request.args.get("per_page", PAGE_SIZE))
+        except ValueError:
+            per_page = PAGE_SIZE
+        if per_page not in per_page_opts:
+            per_page = PAGE_SIZE
+
         models  = unique_models(db_path)
         batches = unique_batches(db_path)
+        years   = catalog_years(db_path)
         page_rows, total = query_catalog(
-            db_path, q, model_filter, date_from, date_to, sort, page, PAGE_SIZE,
+            db_path, q, model_filter, date_from, date_to, sort, page, per_page,
             batch=batch_filter,
         )
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
 
         for r in page_rows:
@@ -969,6 +1043,7 @@ document.addEventListener('DOMContentLoaded', function() {
             q=q, model_filter=model_filter, batch_filter=batch_filter,
             date_from=date_from,
             date_to=date_to, sort=sort, models=models, batches=batches,
+            years=years, per_page=per_page, per_page_opts=per_page_opts,
             page_url=page_url, request=request,
             current_url=request.url,
         )
@@ -993,10 +1068,15 @@ document.addEventListener('DOMContentLoaded', function() {
         def _qs1(key, default=""):
             vals = qs.get(key, [])
             return vals[0] if vals else default
+        # Reassemble the date filters the same way index() does, so prev/next
+        # navigation respects the active Year/Month dropdown filter.
+        def _ym(prefix, month_default):
+            y = _qs1(prefix + "_year")
+            return "{}-{}".format(y, _qs1(prefix + "_month") or month_default) if y else ""
         nav_ids = list_media_ids(
             db_path,
             q=_qs1("q"), model=_qs1("model"),
-            date_from=_qs1("date_from"), date_to=_qs1("date_to"),
+            date_from=_ym("from", "01"), date_to=_ym("to", "12"),
             sort=_qs1("sort", "newest"), batch=_qs1("batch"),
         )
         try:
