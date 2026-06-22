@@ -610,7 +610,7 @@ def page_variables(page_size, before=None):
 # ---------------------------------------------------------------------------
 _FULL_META_FIELDS = (
     "prompt_full", "natural_prompt", "seed", "steps",
-    "sampler", "cfg_scale", "model_id", "model_name",
+    "sampler", "cfg_scale", "model_id", "model_name", "loras",
 )
 
 
@@ -674,7 +674,7 @@ def model_name_gql(session, model_version_id, _cache={}):
 
 
 def extract_full_meta(task):
-    """Pull the 8 extended fields out of a getTaskById task dict."""
+    """Pull the extended fields out of a getTaskById task dict."""
     if not task:
         return {}
     params = task.get("parameters") or {}
@@ -689,7 +689,30 @@ def extract_full_meta(task):
         "cfg_scale":      str(detail.get("cfg_scale") or ""),
         "model_id":       str(params.get("modelId") or ""),
         "model_name":     "",  # filled in by caller after model_name_gql
+        "loras":          "",  # filled in by caller via resolve_loras()
     }
+
+
+def resolve_loras(session, task):
+    """Read parameters.lora ({loraVersionId: weight}) from a getTaskById task and
+    return a readable "Name:0.7, Name2:0.5" string, resolving each LoRA id to a
+    name via getGenerationModelByVersionId (cached). Unresolvable ids keep the
+    number. Empty string if the task used no LoRAs."""
+    params = (task or {}).get("parameters") or {}
+    lora = params.get("lora") or {}
+    if not isinstance(lora, dict) or not lora:
+        return ""
+    parts = []
+    for vid, weight in lora.items():
+        name = model_name_gql(session, vid)
+        if not name or str(name) == str(vid) or str(name).isdigit():
+            name = "lora {}".format(vid)
+        try:
+            w = "{:g}".format(float(weight))
+        except (TypeError, ValueError):
+            w = str(weight)
+        parts.append("{}:{}".format(name, w))
+    return ", ".join(parts)
 
 
 def _merge_full(fm, kr):
@@ -1642,6 +1665,44 @@ def run_fix_models(args):
             "unresolved": unresolved}
 
 
+def _simple_gql(session, op, sha256, variables=None):
+    """Replay a no-arg (or simple) persisted GET op; return data dict or {}."""
+    params = {
+        "operation": op, "u3t": U3T, "operationName": op,
+        "variables": json.dumps(variables or {}, separators=(",", ":")),
+        "extensions": json.dumps(
+            {"clientLibrary": CLIENT_LIBRARY_ARTWORK,
+             "persistedQuery": {"version": 1, "sha256Hash": sha256}},
+            separators=(",", ":")),
+    }
+    try:
+        r = session.get(API_URL, params=params, timeout=60,
+                        headers={"x-apollo-operation-name": op})
+        if r.status_code != 200:
+            return {}
+        return r.json().get("data") or {}
+    except (requests.RequestException, ValueError):
+        return {}
+
+
+_QUOTA_HASH = "9356b42a4ff6e987347a1f1ee3de7aba4bd103b1cdbfbbc4c5c5fcf52767ad66"
+_MEMBERSHIP_HASH = "53dbad3c972e775222a4a6344727b3d2809fc3f08f6787f56500abb8245f9e88"
+
+
+def run_account_info(args):
+    """Print account quota (credits) and membership/plan info."""
+    session = _make_session(getattr(args, "token", None))
+    quota = _simple_gql(session, "getMyQuota", _QUOTA_HASH)
+    me = quota.get("me") or {}
+    print("Account: {}".format(me.get("id") or USER_ID))
+    print("Quota / credits: {}".format(me.get("quotaAmount", "unknown")))
+    member = _simple_gql(session, "getMyMembership", _MEMBERSHIP_HASH)
+    m = member.get("me") or member.get("membership") or member
+    if m:
+        print("Membership: {}".format(json.dumps(m)[:300]))
+    return {"quota": me.get("quotaAmount")}
+
+
 def run_catalog_stats(args):
     """Summarize the existing catalog (no network needed)."""
     out = Path(args.out)
@@ -1743,6 +1804,7 @@ def run_backfill_full_meta(args):
         fm = extract_full_meta(task_data)
         if fm.get("model_id"):
             fm["model_name"] = model_name_gql(session, fm["model_id"])
+        fm["loras"] = resolve_loras(session, task_data)
 
         # Also grab media URL/dimensions from the task's media object if present
         media_obj = (task_data or {}).get("media") or {}
@@ -2018,6 +2080,7 @@ def run_download(args, progress=None):
                             fm = extract_full_meta(task_data)
                             if fm.get("model_id"):
                                 fm["model_name"] = model_name_gql(session, fm["model_id"])
+                            fm["loras"] = resolve_loras(session, task_data)
                             _full_meta_cache[tid] = fm
                             time.sleep(args.delay)
                         full_meta = _full_meta_cache.get(tid, {})
@@ -2117,6 +2180,7 @@ def run_download(args, progress=None):
                         fm = extract_full_meta(task_data)
                         if fm.get("model_id"):
                             fm["model_name"] = model_name_gql(session, fm["model_id"])
+                        fm["loras"] = resolve_loras(session, task_data)
                         _full_meta_cache[tid] = fm
                         time.sleep(args.delay)
                     full_meta = _full_meta_cache.get(meta["task_id"], {})

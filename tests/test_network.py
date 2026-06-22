@@ -401,6 +401,16 @@ def test_sync_artworks_merges_by_media_id(tmp_path, mocker):
     assert row["is_published"] == "1" and row["artwork_id"] == "aw1"
 
 
+def test_resolve_loras(mocker):
+    mocker.patch.object(core, "model_name_gql",
+                        side_effect=lambda s, vid: {"111": "DetailLora", "222": "222"}.get(str(vid), str(vid)))
+    task = {"parameters": {"lora": {"111": 0.7, "222": 0.5}}}
+    out = core.resolve_loras(mocker.MagicMock(), task)
+    assert "DetailLora:0.7" in out
+    assert "lora 222:0.5" in out          # unresolved id gets a "lora <id>" label
+    assert core.resolve_loras(mocker.MagicMock(), {"parameters": {}}) == ""
+
+
 def test_needs_model_fix():
     # numeric model_name with matching id -> needs fixing
     assert core._needs_model_fix({"model_id": "123", "model_name": "123"}) == "123"

@@ -48,6 +48,8 @@ CATALOG_FIELDS = [
     # Published-artwork metadata, populated by --sync-artworks (blank otherwise)
     "artwork_id", "title", "is_published", "is_nsfw",
     "liked_count", "comment_count", "aes_score", "art_tags",
+    # LoRAs used, populated by --full-meta / --backfill-full-meta ("Name:0.7, …")
+    "loras",
 ]
 
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"})
@@ -84,7 +86,8 @@ CREATE TABLE IF NOT EXISTS catalog (
     liked_count     TEXT DEFAULT '',
     comment_count   TEXT DEFAULT '',
     aes_score       TEXT DEFAULT '',
-    art_tags        TEXT DEFAULT ''
+    art_tags        TEXT DEFAULT '',
+    loras           TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_created_at ON catalog(created_at);
 CREATE INDEX IF NOT EXISTS idx_model_name ON catalog(model_name);
@@ -132,6 +135,7 @@ _MIGRATIONS = [
     "ALTER TABLE catalog ADD COLUMN comment_count TEXT DEFAULT ''",
     "ALTER TABLE catalog ADD COLUMN aes_score TEXT DEFAULT ''",
     "ALTER TABLE catalog ADD COLUMN art_tags TEXT DEFAULT ''",
+    "ALTER TABLE catalog ADD COLUMN loras TEXT DEFAULT ''",
 ]
 
 def _connect(db_path):
@@ -274,7 +278,7 @@ def _like_pattern(term):
 
 
 def _build_where(q, model, date_from, date_to, batch="", rating_min=0,
-                 published_only=False, art_tag=""):
+                 published_only=False, art_tag="", lora=""):
     """Return (where_clause, params) for the common filter set."""
     clauses = ["filename != ''"]
     params  = []
@@ -286,6 +290,9 @@ def _build_where(q, model, date_from, date_to, batch="", rating_min=0,
     if art_tag:
         clauses.append("LOWER(COALESCE(art_tags,'')) LIKE ?")
         params.append("%" + art_tag.strip().lower() + "%")
+    if lora:
+        clauses.append("LOWER(COALESCE(loras,'')) LIKE ?")
+        params.append("%" + lora.strip().lower() + "%")
     if q:
         # Whitespace-separated terms are ANDed; each may use * / ? wildcards.
         for term in q.split():
@@ -320,10 +327,10 @@ def get_row(db_path, media_id):
 
 def query_catalog(db_path, q="", model="", date_from="", date_to="",
                   sort="newest", page=1, page_size=100, batch="", rating_min=0,
-                  published_only=False, art_tag=""):
+                  published_only=False, art_tag="", lora=""):
     """Return (rows, total) with filtering, sorting and pagination done in SQL."""
     where, params = _build_where(q, model, date_from, date_to, batch, rating_min,
-                                 published_only, art_tag)
+                                 published_only, art_tag, lora)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     offset = (max(1, page) - 1) * page_size
     con = _connect(db_path)
@@ -341,10 +348,10 @@ def query_catalog(db_path, q="", model="", date_from="", date_to="",
 
 
 def list_media_ids(db_path, q="", model="", date_from="", date_to="", sort="newest",
-                   batch="", rating_min=0, published_only=False, art_tag=""):
+                   batch="", rating_min=0, published_only=False, art_tag="", lora=""):
     """Return ordered list of media_ids matching the filter (no row data)."""
     where, params = _build_where(q, model, date_from, date_to, batch, rating_min,
-                                 published_only, art_tag)
+                                 published_only, art_tag, lora)
     order = _SORT_SQL.get(sort, _DEFAULT_SORT_SQL)
     con = _connect(db_path)
     try:
@@ -521,6 +528,8 @@ def collection_health(out_dir, db_path):
             "FROM catalog WHERE is_published = '1'")
         tag_rows = con.execute(
             "SELECT art_tags FROM catalog WHERE COALESCE(art_tags,'') != ''").fetchall()
+        lora_rows = con.execute(
+            "SELECT loras FROM catalog WHERE COALESCE(loras,'') != ''").fetchall()
         # catalog rows that claim a file but whose media_id isn't on disk
         cat_ids = [r[0] for r in con.execute(
             "SELECT media_id FROM catalog WHERE filename != ''").fetchall()]
@@ -534,6 +543,14 @@ def collection_health(out_dir, db_path):
             if t:
                 tag_counter[t] += 1
     top_tags = tag_counter.most_common(10)
+
+    lora_counter = Counter()
+    for (loras,) in lora_rows:
+        for part in (loras or "").split(","):
+            name = part.strip().rsplit(":", 1)[0].strip()  # drop ":weight"
+            if name:
+                lora_counter[name] += 1
+    top_loras = lora_counter.most_common(10)
 
     missing = sum(1 for mid in cat_ids if mid and mid not in on_disk_ids)
 
@@ -556,6 +573,7 @@ def collection_health(out_dir, db_path):
         "published": published,
         "total_likes": total_likes,
         "top_tags": top_tags,
+        "top_loras": top_loras,
     }
 
 
@@ -1013,6 +1031,10 @@ document.addEventListener('DOMContentLoaded', function() {
     <input type="text" name="tag" value="{{ art_tag }}" placeholder="published tag…" style="width:140px">
   </div>
   <div>
+    <label>LoRA</label><br>
+    <input type="text" name="lora" value="{{ lora_filter }}" placeholder="lora name…" style="width:140px">
+  </div>
+  <div>
     <label>&nbsp;</label><br>
     <label style="color:var(--text);font-size:13px;display:inline-flex;align-items:center;gap:6px;">
       <input type="checkbox" name="published" value="1" {% if published_only %}checked{% endif %}
@@ -1409,6 +1431,18 @@ document.addEventListener('DOMContentLoaded', function() {
     <span class="val">{{ row.prompt_preview }}</span>
     <span class="lbl">Model</span>
     <span class="val">{{ row.model_name or row.model_id or '—' }}</span>
+    {% if row.loras %}
+    <span class="lbl">LoRAs</span>
+    <span class="val">{{ row.loras }}</span>
+    {% endif %}
+    {% if row.title %}
+    <span class="lbl">Title</span>
+    <span class="val">{{ row.title }}</span>
+    {% endif %}
+    {% if row.art_tags %}
+    <span class="lbl">Tags</span>
+    <span class="val">{{ row.art_tags }}</span>
+    {% endif %}
     <span class="lbl">Seed</span>
     <span class="val">{{ row.seed or '—' }}</span>
     <span class="lbl">Steps</span>
@@ -1541,6 +1575,17 @@ function copyPrompt(btn) {
   </div>
   {% endif %}
 
+  {% if h.top_loras %}
+  <h2 style="margin:28px 0 10px;font-size:16px;">Top LoRAs</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+    {% for name, c in h.top_loras %}
+    <a href="{{ url_for('index', lora=name) }}"
+       style="display:inline-flex;align-items:center;gap:6px;background:var(--mantle);border:0.5px solid var(--surface1);border-left:3px solid var(--accent-soft);border-radius:4px;padding:4px 10px;font-size:12px;color:var(--text);text-decoration:none;">
+      {{ name }} <span style="color:var(--subtext);">{{ c }}</span></a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <h2 style="margin:28px 0 10px;font-size:16px;">Folder breakdown</h2>
   <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--subtext);">
     {% for b, c in h.per_bucket.items() %}
@@ -1615,6 +1660,7 @@ function copyPrompt(btn) {
             rating_min = 0
         published_only = request.args.get("published") == "1"
         art_tag = request.args.get("tag", "")
+        lora_filter = request.args.get("lora", "")
 
         models  = unique_models(db_path)
         batches = unique_batches(db_path)
@@ -1622,7 +1668,7 @@ function copyPrompt(btn) {
         page_rows, total = query_catalog(
             db_path, q, model_filter, date_from, date_to, sort, page, per_page,
             batch=batch_filter, rating_min=rating_min,
-            published_only=published_only, art_tag=art_tag,
+            published_only=published_only, art_tag=art_tag, lora=lora_filter,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
@@ -1661,10 +1707,13 @@ function copyPrompt(btn) {
             chips.append({"k": "published", "v": "yes", "url": _without("published")})
         if art_tag:
             chips.append({"k": "tag", "v": art_tag, "url": _without("tag")})
+        if lora_filter:
+            chips.append({"k": "lora", "v": lora_filter, "url": _without("lora")})
 
         return render_template_string(
             INDEX_HTML,
             chips=chips, published_only=published_only, art_tag=art_tag,
+            lora_filter=lora_filter,
             rows=page_rows, total=total, page=page,
             total_pages=total_pages, page_range=_page_range(page, total_pages),
             q=q, model_filter=model_filter, batch_filter=batch_filter,
@@ -1711,6 +1760,7 @@ function copyPrompt(btn) {
             date_from=_ym("from", "01"), date_to=_ym("to", "12"),
             sort=_qs1("sort", "newest"), batch=_qs1("batch"), rating_min=_rmin,
             published_only=(_qs1("published") == "1"), art_tag=_qs1("tag"),
+            lora=_qs1("lora"),
         )
         try:
             idx = nav_ids.index(media_id)

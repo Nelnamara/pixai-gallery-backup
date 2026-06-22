@@ -1079,6 +1079,9 @@ class UtilitiesTab(QWidget):
         self.btn_fix_models.setObjectName("btn_run")
         self.btn_fix_models.setToolTip("Re-resolve readable model names for rows showing a raw "
                                        "numeric id (one API call per distinct model)")
+        self.btn_account = QPushButton("▶  Account Info")
+        self.btn_account.setObjectName("btn_run")
+        self.btn_account.setToolTip("Show your PixAI quota/credits and membership")
 
         backfill_row = QHBoxLayout()
         backfill_row.addWidget(self.btn_backfill)
@@ -1089,6 +1092,7 @@ class UtilitiesTab(QWidget):
         export_row.addWidget(self.btn_export_csv)
         export_row.addWidget(self.btn_sync_artworks)
         export_row.addWidget(self.btn_fix_models)
+        export_row.addWidget(self.btn_account)
         export_row.addStretch()
 
         self.btn_backfill.clicked.connect(self._run_backfill)
@@ -1096,6 +1100,7 @@ class UtilitiesTab(QWidget):
         self.btn_export_csv.clicked.connect(self._run_export_csv)
         self.btn_sync_artworks.clicked.connect(self._run_sync_artworks)
         self.btn_fix_models.clicked.connect(self._run_fix_models)
+        self.btn_account.clicked.connect(lambda: self._run(core.run_account_info, self._base_args()))
 
         # ---- Duplicate audit / dedup ----
         self.btn_audit = QPushButton("▶  Audit Duplicates")
@@ -1291,7 +1296,7 @@ class UtilitiesTab(QWidget):
         for b in (self.btn_probe, self.btn_count, self.btn_stats,
                   self.btn_backfill, self.btn_backfill_full, self.btn_export_csv,
                   self.btn_audit, self.btn_dedup, self.btn_verify,
-                  self.btn_sync_artworks, self.btn_fix_models):
+                  self.btn_sync_artworks, self.btn_fix_models, self.btn_account):
             b.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         if running:

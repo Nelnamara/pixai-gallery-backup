@@ -163,6 +163,17 @@ def test_published_and_tag_filters(tmp_path):
     assert query_catalog(db, published_only=True, art_tag="city")[1] == 1
 
 
+def test_lora_filter(tmp_path):
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [
+        _row(media_id="1", filename="a.png", loras="Detail Tweaker:0.7, Anime:0.5"),
+        _row(media_id="2", filename="b.png", loras="Anime:0.6"),
+        _row(media_id="3", filename="c.png", loras=""),
+    ])
+    assert query_catalog(db, lora="anime")[1] == 2
+    assert query_catalog(db, lora="detail")[1] == 1
+
+
 def test_full_image_and_export_zip_routes(tmp_path):
     import io
     import zipfile
