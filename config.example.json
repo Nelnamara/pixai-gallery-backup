@@ -1,10 +1,13 @@
 {
-  "_comment": "Copy this file to config.json and replace every value below with YOUR OWN values captured from your browser. config.json is git-ignored and will never be committed.",
+  "_comment": "Copy this file to config.json and replace every value below with YOUR OWN values. config.json is git-ignored and will never be committed.",
+
+  "_comment_api_key": "PREFERRED auth. Generate an official API key at platform.pixai.art (you can set its lifetime up to ~2 years). When present it is used as the Bearer credential for ALL calls, so you do NOT need U3T or a browser token, and never have to recapture an expiring login. Leave blank to fall back to the browser-JWT path (token.txt / PIXAI_TOKEN).",
+  "PIXAI_API_KEY": "",
 
   "_comment_user_id": "Your PixAI numeric user ID — found in your profile URL: pixai.art/profile/<YOUR_ID_HERE>",
   "USER_ID": "YOUR_PIXAI_USER_ID",
 
-  "_comment_u3t": "Captured from DevTools Network tab — see README Step 2. This is the 'u3t' field in the listUserTaskSummaries GraphQL request payload.",
+  "_comment_u3t": "Only needed if you are NOT using PIXAI_API_KEY. Captured from DevTools — the 'u3t' field in the listUserTaskSummaries request.",
   "U3T": "YOUR_U3T_VALUE",
 
   "_comment_hash": "Captured from DevTools Network tab — see README Step 2. This is extensions.persistedQuery.sha256Hash from the listUserTaskSummaries request.",

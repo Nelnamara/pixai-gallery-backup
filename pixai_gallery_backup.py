@@ -144,15 +144,25 @@ VARIANT_CANDIDATES = ["original", "orig", "full", "hd", "public", "raw", "thumbn
 
 
 def load_token(cli_token=None):
+    # Priority: explicit --token > PIXAI_API_KEY (config) > PIXAI_TOKEN env > token.txt.
+    # The official API key is preferred because it's long-lived (up to ~2 years) and
+    # authenticates the same Bearer endpoint -- no expiring browser JWT to recapture.
     if cli_token:
         return cli_token.strip()
+    api_key = (_cfg.get("PIXAI_API_KEY", "") or "").strip()
+    if not api_key:
+        fresh = _load_config()
+        api_key = (fresh.get("PIXAI_API_KEY", "") if fresh else "").strip()
+    if api_key:
+        return api_key
     env = os.environ.get("PIXAI_TOKEN")
     if env:
         return env.strip()
     for f in (Path(__file__).resolve().parent / "token.txt", Path("token.txt")):
         if f.exists():
             return f.read_text(encoding="utf-8").strip()
-    raise PixAIError("No token found. Set PIXAI_TOKEN, pass --token, or create token.txt.")
+    raise PixAIError("No credential found. Add PIXAI_API_KEY to config.json (preferred), "
+                     "set PIXAI_TOKEN, pass --token, or create token.txt.")
 
 
 def _ssl_help():
@@ -1388,13 +1398,16 @@ def _make_session(token_val):
         USER_ID = fresh.get("USER_ID", "") or USER_ID
         TASK_DETAIL_HASH = fresh.get("TASK_DETAIL_HASH", "") or TASK_DETAIL_HASH
         MODEL_DETAIL_HASH = fresh.get("MODEL_DETAIL_HASH", "") or MODEL_DETAIL_HASH
-    if not all([PERSISTED_QUERY_HASH, U3T, USER_ID]):
+    # With an API key (sent as Bearer) the per-session u3t is not required; the
+    # browser-JWT path still wants it. Always need the persisted hash + USER_ID.
+    have_api_key = bool((fresh or {}).get("PIXAI_API_KEY") or _cfg.get("PIXAI_API_KEY"))
+    required = [PERSISTED_QUERY_HASH, USER_ID] if have_api_key else [PERSISTED_QUERY_HASH, U3T, USER_ID]
+    if not all(required):
         raise PixAIError(
-            "config.json is missing or incomplete "
-            "(need PERSISTED_QUERY_HASH, U3T, USER_ID).\n"
-            "Copy config.example.json to config.json and fill in your captured values.\n"
-            "See the README -> Configuration for instructions."
-        )
+            "config.json is missing or incomplete (need PERSISTED_QUERY_HASH, USER_ID"
+            "{}).\nCopy config.example.json to config.json and fill in your values.\n"
+            "See the README -> Configuration for instructions.".format(
+                "" if have_api_key else ", U3T"))
     token = load_token(token_val)
     session = requests.Session()
     session.headers.update({

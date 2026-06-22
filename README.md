@@ -85,7 +85,19 @@ pip install requests truststore pillow PySide6 flask
 
 ## Configuration
 
-`config.json` lives next to the scripts and is git-ignored. It holds values captured once from your browser. You only need to do this once — they only change if PixAI updates their frontend.
+`config.json` lives next to the scripts and is git-ignored.
+
+### Recommended: use an official API key (no expiring login)
+
+Generate an API key at [platform.pixai.art](https://platform.pixai.art) (you can set its lifetime up to ~2 years) and put it in `config.json` as `PIXAI_API_KEY`. It's sent as the Bearer credential for **every** call — listing, media resolution, full-meta, model names — so you **don't need `U3T` or a browser token**, and you never have to recapture an expiring login. You still need `USER_ID` and `PERSISTED_QUERY_HASH` (captured once from DevTools, below); they only change if PixAI updates their frontend.
+
+```json
+"PIXAI_API_KEY": "your-key",
+"USER_ID": "your-numeric-id",
+"PERSISTED_QUERY_HASH": "captured-hash"
+```
+
+If you'd rather not create a key, leave `PIXAI_API_KEY` blank and use the browser-JWT path (capture `U3T` too, and supply a token via `token.txt` / `PIXAI_TOKEN` / `--token`).
 
 Copy `config.example.json` to `config.json` and fill in the fields below.
 
@@ -400,6 +412,7 @@ python pixai_gallery_backup.py --backfill-full-meta
 
 ### Unreleased
 
+- **Official API-key auth (stable, no expiring login)** — set `PIXAI_API_KEY` in `config.json` (an official key from platform.pixai.art, lifetime up to ~2 years) and it's used as the Bearer credential for **all** calls, including the bulk `listUserTaskSummaries` listing. Verified end-to-end: listing, media resolution, full-meta, and model lookups all authenticate with the key — so `U3T` and the browser token become unnecessary and there's nothing to recapture as it expires. The browser-JWT path remains as a fallback.
 - **Animated-artwork (video) backup** — `--sync-artworks --with-videos` downloads animated-artwork video files (`videoMediaId`) into a `videos/` folder; `ext_from_ct` now recognizes mp4/webm/mov/avif so video files are saved with the correct extension. GUI: "incl. videos" checkbox next to Sync Artworks.
 - **Aesthetic-score / Most-liked sorts**, **lightbox swipe + double-tap zoom**, **tablet breakpoint**, **PWA** (offline thumbnails / add-to-home-screen), **LoRA tracking** (filter + detail display + dashboard "Top LoRAs"), **Account info** (quota/membership), **prompt word-cloud**, **saved filter presets**, **privacy blur**.
 - **Published-artwork sync** (`--sync-artworks`) — pulls title, NSFW flag, like/comment counts, aesthetic score, and tag/contest labels for your published pieces (via `listArtworks`) into the catalog by `media_id`; 8 new catalog columns; GUI Utilities button.

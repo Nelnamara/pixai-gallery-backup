@@ -77,7 +77,7 @@ def test_load_token_strips_whitespace(monkeypatch):
 def test_load_token_raises_when_none(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "__file__", str(tmp_path / "pixai_gallery_backup.py"))
     monkeypatch.chdir(tmp_path)  # prevent CWD fallback from finding a real token.txt
-    with pytest.raises(core.PixAIError, match="No token"):
+    with pytest.raises(core.PixAIError, match="No credential"):
         core.load_token()
 
 
