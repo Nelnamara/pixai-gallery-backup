@@ -250,6 +250,9 @@ _SORT_SQL = {
                    "CAST(COALESCE(NULLIF(height,''),'0') AS INTEGER)) DESC",
     "aspect":      "(CAST(COALESCE(NULLIF(width,''),'0') AS REAL) / "
                    "NULLIF(CAST(COALESCE(NULLIF(height,''),'0') AS REAL),0)) DESC",
+    "aes_desc":    "CAST(COALESCE(NULLIF(aes_score,''),'0') AS REAL) DESC, created_at DESC",
+    "aes_asc":     "CAST(COALESCE(NULLIF(aes_score,''),'0') AS REAL) ASC,  created_at DESC",
+    "likes":       "CAST(COALESCE(NULLIF(liked_count,''),'0') AS INTEGER) DESC, created_at DESC",
 }
 _DEFAULT_SORT_SQL = "created_at DESC"
 
@@ -685,9 +688,12 @@ def create_app(out_dir: Path):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+<meta name="theme-color" content="#0c0a1c">
 <title>PixAI Gallery</title>
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23cba6f7'/%3E%3Cpath d='M9 22V10h6a4 4 0 0 1 0 8h-3' stroke='%231e1e2e' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='11' r='2.2' fill='%23d4af37'/%3E%3C/svg%3E">
+<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(){});});}</script>
 <style>
   :root {
     /* Palette sampled from two reference images:
@@ -732,6 +738,14 @@ def create_app(out_dir: Path):
     .filters input, .filters select { width: 100% !important; box-sizing: border-box; }
     .grid { padding: 10px 12px; gap: 8px; }
     .chips { padding: 8px 12px 0; }
+    .filters input, .filters select { font-size: 16px; }  /* >=16px stops iOS zoom-on-focus */
+  }
+  /* Tablet: keep the filter bar visible but let wide text inputs shrink so the
+     row wraps tidily instead of running off-screen. */
+  @media (min-width: 681px) and (max-width: 1024px) {
+    .filters input { width: 180px; }
+    .filters { padding: 10px 14px; }
+    .grid { padding: 12px 14px; }
   }
   .btn { background: var(--surface0); color: var(--text); border: 1px solid var(--surface1); border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
   .btn:hover { background: var(--surface1); }
@@ -1023,6 +1037,9 @@ document.addEventListener('DOMContentLoaded', function() {
       <option value="model"       {% if sort=='model' %}selected{% endif %}>Model name</option>
       <option value="pixels"      {% if sort=='pixels' %}selected{% endif %}>Resolution ↓</option>
       <option value="aspect"      {% if sort=='aspect' %}selected{% endif %}>Aspect (wide→tall)</option>
+      <option value="aes_desc"    {% if sort=='aes_desc' %}selected{% endif %}>Aesthetic score ↓</option>
+      <option value="aes_asc"     {% if sort=='aes_asc' %}selected{% endif %}>Aesthetic score ↑</option>
+      <option value="likes"       {% if sort=='likes' %}selected{% endif %}>Most liked</option>
       <option value="width"       {% if sort=='width' %}selected{% endif %}>Width ↓</option>
       <option value="height"      {% if sort=='height' %}selected{% endif %}>Height ↓</option>
     </select>
@@ -1230,7 +1247,7 @@ function confirmBulkDelete() {
 }
 
 /* ---- Lightbox + keyboard navigation ---- */
-var lbCards = [], lbIdx = -1, lbTimer = null;
+var lbCards = [], lbIdx = -1, lbTimer = null, lbZoom = false;
 function lbUrl(mid) { return '/full/' + mid; }
 function openLightbox(ev, idx) {
   if (ev) { if (ev.metaKey || ev.ctrlKey || ev.shiftKey) return true; ev.preventDefault(); }
@@ -1244,7 +1261,9 @@ function openLightbox(ev, idx) {
 function lbShow() {
   var card = lbCards[lbIdx]; if (!card) return;
   var mid = card.dataset.mid;
-  document.getElementById('lb-img').src = lbUrl(mid);
+  var im = document.getElementById('lb-img');
+  lbZoom = false; im.style.transform = '';      // reset zoom on navigate
+  im.src = lbUrl(mid);
   document.getElementById('lb-caption').textContent =
     (lbIdx + 1) + ' / ' + lbCards.length + '   ' + (card.dataset.prompt || '');
   document.getElementById('lb-details').href = '/image/' + mid + '?back=' + encodeURIComponent(location.href);
@@ -1296,7 +1315,31 @@ document.addEventListener('keydown', function(e) {
   else if (e.key === 'ArrowUp') { e.preventDefault(); kbdFocus(kbdIdx - cols); }
   else if (e.key === 'Enter' && kbdIdx >= 0) { openLightbox(null, kbdIdx); }
 });
-document.addEventListener('DOMContentLoaded', function(){ refreshSelUI(); applyBlur(); });
+document.addEventListener('DOMContentLoaded', function(){
+  refreshSelUI(); applyBlur();
+  // Lightbox touch: swipe left/right to navigate, double-tap to zoom 2x.
+  var im = document.getElementById('lb-img');
+  if (im) {
+    var x0 = null, lastTap = 0;
+    im.addEventListener('touchstart', function(e){
+      if (e.touches.length === 1) x0 = e.touches[0].clientX;
+    }, {passive: true});
+    im.addEventListener('touchend', function(e){
+      var now = Date.now();
+      if (now - lastTap < 300) {            // double-tap zoom
+        lbZoom = !lbZoom;
+        im.style.transform = lbZoom ? 'scale(2)' : '';
+        lastTap = 0; x0 = null; return;
+      }
+      lastTap = now;
+      if (x0 !== null && !lbZoom) {         // horizontal swipe = navigate
+        var dx = e.changedTouches[0].clientX - x0;
+        if (Math.abs(dx) > 50) lbStep(dx < 0 ? 1 : -1);
+      }
+      x0 = null;
+    }, {passive: true});
+  }
+});
 </script>
 """)
 
@@ -1744,6 +1787,37 @@ function copyPrompt(btn) {
         resp = send_from_directory(str(out_dir), rel, max_age=31536000)
         resp.headers["Cache-Control"] = _IMMUTABLE
         return resp
+
+    @app.route("/manifest.webmanifest")
+    def manifest():
+        icon = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                "viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23cba6f7'/%3E"
+                "%3Cpath d='M9 22V10h6a4 4 0 0 1 0 8h-3' stroke='%231e1e2e' stroke-width='2.4' "
+                "fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='11' r='2.2' "
+                "fill='%23d4af37'/%3E%3C/svg%3E")
+        return app.response_class(
+            json.dumps({
+                "name": "PixAI Gallery", "short_name": "PixAI",
+                "start_url": "/", "display": "standalone",
+                "background_color": "#0c0a1c", "theme_color": "#0c0a1c",
+                "icons": [{"src": icon, "sizes": "any", "type": "image/svg+xml"}],
+            }),
+            mimetype="application/manifest+json")
+
+    @app.route("/sw.js")
+    def service_worker():
+        # Cache-first for immutable thumbnails/images; network for everything else.
+        sw = (
+            "const C='pixai-img-v1';\n"
+            "self.addEventListener('install',e=>self.skipWaiting());\n"
+            "self.addEventListener('activate',e=>self.clients.claim());\n"
+            "self.addEventListener('fetch',e=>{\n"
+            " const u=new URL(e.request.url);\n"
+            " if(e.request.method==='GET' && (u.pathname.startsWith('/thumbs/')||u.pathname.startsWith('/img/')||u.pathname.startsWith('/full/'))){\n"
+            "  e.respondWith(caches.open(C).then(c=>c.match(e.request).then(r=>r||fetch(e.request).then(resp=>{c.put(e.request,resp.clone());return resp;}))));\n"
+            " }\n"
+            "});\n")
+        return app.response_class(sw, mimetype="application/javascript")
 
     @app.route("/full/<media_id>")
     def full_image(media_id):

@@ -117,6 +117,17 @@ def test_sort_pixels_orders_by_area(tmp_path):
     assert rows[0]["media_id"] == "big"
 
 
+def test_sort_aesthetic_and_likes(tmp_path):
+    p = tmp_path / "catalog.db"
+    save_catalog(p, [
+        _row(media_id="lo", filename="lo.png", aes_score="3.2", liked_count="1"),
+        _row(media_id="hi", filename="hi.png", aes_score="8.9", liked_count="50"),
+    ])
+    assert query_catalog(p, sort="aes_desc")[0][0]["media_id"] == "hi"
+    assert query_catalog(p, sort="aes_asc")[0][0]["media_id"] == "lo"
+    assert query_catalog(p, sort="likes")[0][0]["media_id"] == "hi"
+
+
 # ---- collection_health -----------------------------------------------------
 
 def test_collection_health_counts_and_missing(tmp_path):
