@@ -139,13 +139,13 @@ Fix: DevTools → Network → filter `graphql` → click `listUserTaskSummaries`
 
 ## Test suite
 
-81 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
+120 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
 
 ---
 
 ## Current state
 
-- **Version:** `1.1.0` on `master`
+- **Version:** `1.2.0` on `master`
 - **Branch strategy:** feature branches, merge to master with `--no-ff`, tag releases
 - **Owner:** Nelnamara / Kil'jaeden — Balance Druid, WoW addon dev
 
@@ -157,7 +157,10 @@ Fix: DevTools → Network → filter `graphql` → click `listUserTaskSummaries`
 python pixai_gallery_backup.py --probe                    # connection sanity check
 python pixai_gallery_backup.py --count                    # tally tasks + images
 python pixai_gallery_backup.py --max 40                   # small test download
-python pixai_gallery_backup.py                            # full download
+python pixai_gallery_backup.py                            # full download (4 workers, 250/page)
+python pixai_gallery_backup.py --update                   # fast incremental: stop at already-downloaded history
+python pixai_gallery_backup.py --update --workers 8       # incremental + higher concurrency
+python pixai_gallery_backup.py --workers 8 --page-size 500  # fast full backfill
 python pixai_gallery_backup.py --full-meta                # download + full prompt/seed/model
 python pixai_gallery_backup.py --backfill-full-meta       # fill existing rows
 python pixai_gallery_backup.py --organize-adv --dry-run   # preview folder sort
@@ -169,5 +172,6 @@ python pixai_gallery_backup.py --audit --no-content       # fast: same-media_id 
 python pixai_gallery_backup.py --dedup                    # dry-run dedup plan (nothing changes)
 python pixai_gallery_backup.py --dedup --apply            # quarantine redundant copies to _duplicates/
 python pixai_gallery_backup.py --dedup --apply --dedup-delete  # delete instead of quarantine
-python pixai_gallery.py --out pixai_backup                # launch gallery at :5000
+python pixai_gallery_backup.py --verify-dupes             # confirm _duplicates/ is safe to delete
+python pixai_gallery.py --out pixai_backup                # launch gallery at :5000 (+ /health dashboard)
 ```

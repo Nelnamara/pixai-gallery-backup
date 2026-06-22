@@ -11,11 +11,14 @@ PixAI's terms grant users copyright of their own generations. This tool is rate-
 ## Features
 
 - **Full-resolution downloads** — bypasses the 20-image gallery limit; fetches every generation at the original size
-- **Automatic resume** — interrupt any time and re-run; already-saved images are skipped by media ID
+- **Fast parallel downloads** — `--workers N` (default 4) fetches images concurrently; tuned for bulk first-time pulls
+- **Instant resume** — an in-memory media-ID index makes re-runs skip already-saved images with no per-item disk scan (resume stays fast no matter how large the library grows)
+- **Incremental update mode** — `--update` stops paging once it reaches your already-downloaded history, so routine "grab what's new" runs finish in seconds instead of re-walking everything
 - **Persistent catalog** — `catalog.db` (SQLite) is a deduplicated, indexed database keyed by `media_id`; prior-session rows are never lost across interrupted or multi-session downloads; auto-migrates from `catalog.csv` if upgrading
 - **Full generation metadata** — `--full-meta` captures the complete prompt, seed, steps, sampler, CFG scale, and human-readable model name; `--backfill-full-meta` fills existing catalog rows retroactively
-- **Local web gallery** — browse, filter, rate, and delete your images from a browser via the built-in Flask gallery server
-- **Progress meter** — pre-flight library count feeds a live progress bar; resume runs open at the correct position
+- **Duplicate audit & dedup** — `--audit` scans the whole backup folder for duplicate images (same `media_id` across folders, plus byte-identical copies); `--dedup` quarantines the redundant copies (keeping the most-organized one) and `--verify-dupes` proves the quarantine is safe before you delete it
+- **Local web gallery** — browse, filter, rate, and delete your images from a browser; wildcard prompt search, searchable model/batch filters, year/month date pickers, adjustable thumbnail size, and a per-page selector
+- **Collection Health dashboard** — `/health` page summarizing storage used, full-meta coverage, duplicates, missing files, images-by-month, and top models
 - **Format conversion** — convert WebP to PNG or JPEG on download, or batch-convert existing files
 - **Organize mode** — sorts files into `batches/` and `YYYY-MM/` folders; embeds metadata into PNG/JPEG files
 - **Rate limiting** — configurable delay between requests (default 0.4 s)
@@ -29,11 +32,11 @@ A PySide6 desktop GUI (`pixai_gui.py`) wraps the full workflow in a tabbed windo
 
 | Tab | What it does |
 |---|---|
-| **Download** | Configure token, output folder, page size, organize mode, conversion, collect-only, and full-meta; Start / Stop |
+| **Download** | Configure token, output folder, page size, **workers**, **update mode**, organize mode, conversion, collect-only, and full-meta; Start / Stop |
 | **Organize** | Post-download rename (`--organize`) or full folder sort (`--organize-adv`); dry-run preview |
 | **Convert** | Batch-convert existing `.webp` files to PNG or JPEG in place |
-| **Utilities** | Probe, Count, Catalog Stats, Backfill url/width/height, Backfill Full Meta, Export CSV; configurable API delay |
-| **Gallery** | Launch / stop the local gallery server; configurable port; auto-builds thumbnails on start |
+| **Utilities** | Probe, Count, Catalog Stats, Backfill url/width/height, Backfill Full Meta, Export CSV, **Audit Duplicates / Dedup / Verify Quarantine**; configurable API delay |
+| **Gallery** | Launch / stop the local gallery server; configurable port; LAN mode; auto-builds thumbnails on start |
 
 ![GUI Download tab](screenshots/04_gui_download.png)
 
@@ -163,9 +166,25 @@ Only needed for `--full-meta` and `--backfill-full-meta`. See [Full Meta](#full-
 python pixai_gallery_backup.py --probe        # confirm connection
 python pixai_gallery_backup.py --count        # how many images you have
 python pixai_gallery_backup.py --max 40       # small test download
-python pixai_gallery_backup.py                # download everything
+python pixai_gallery_backup.py                # download everything (4 workers, 250/page)
 python pixai_gallery_backup.py --full-meta    # download + capture full prompt/seed/model
 ```
+
+### Fast Downloads & Incremental Updates
+
+The download path is parallel and incremental by default. For a routine "grab
+what's new" run, use `--update` — it pages newest-first and stops as soon as it
+reaches images you already have, instead of re-walking your whole history:
+
+```
+python pixai_gallery_backup.py --update                       # fast follow-up run
+python pixai_gallery_backup.py --update --workers 8           # push concurrency higher
+python pixai_gallery_backup.py --workers 8 --page-size 500    # fast full backfill
+```
+
+- `--workers N` (default 4) controls how many images download at once. 1 = serial/polite; 6–8 saturates most connections. It composes with every other flag, including `--update`.
+- `--update` stops after `--update-grace` consecutive pages that are entirely on disk (default 2). Use a **plain run (no `--update`)** to backfill items missing from the *middle* of your history (e.g. after deleting files) — `--update` only reaches the newest items.
+- The progress total is taken from your catalog (instant). Pass `--accurate-count` to force the old full-history API count.
 
 ### Organizing Downloads
 
@@ -191,7 +210,27 @@ python pixai_gallery.py --out pixai_backup --port 5757
 
 Or use the **Gallery tab** in the GUI to launch and stop the server with one click.
 
+The gallery filter bar supports wildcard prompt search (`night*`, `a?c`, multiple words ANDed), searchable Model/Batch fields, Year/Month date pickers, a Min-rating filter, a per-page selector, and a thumbnail-size slider. The header links to a **Collection Health** dashboard (`/health`) showing storage used, full-meta coverage, duplicate count, missing files, images-by-month, and top models.
+
 ![Local web gallery showing image grid with filters and star ratings](screenshots/05_gallery_view.png)
+
+### Finding & Removing Duplicates
+
+If your `images/` folder has grown large or you suspect duplicate copies across
+folders, audit first (read-only), then dedup, then verify before reclaiming space:
+
+```
+python pixai_gallery_backup.py --audit                 # read-only report -> audit_report.csv
+python pixai_gallery_backup.py --dedup                 # dry-run plan (nothing changes)
+python pixai_gallery_backup.py --dedup --apply         # quarantine redundant copies to _duplicates/
+python pixai_gallery_backup.py --verify-dupes          # confirm the quarantine is safe to delete
+```
+
+- **`--audit`** finds two kinds of duplicates: the same `media_id` living in more than one folder (Class A), and byte-identical files saved under different IDs (Class B, via size-bucketed hashing). It's filesystem-truth — independent of `catalog.db`.
+- **`--dedup`** keeps the most-organized copy (`batches/` > `YYYY-MM/` > `images/`) and moves the rest to `_duplicates/` (reversible). Add `--dedup-delete` to delete instead of quarantine, or `--no-content` to skip the slower Class-B hashing. It reconciles `catalog.db` afterward and auto-runs a verify pass.
+- **`--verify-dupes`** confirms every quarantined file is byte- or pixel-identical to a surviving copy before you delete `_duplicates/`. `--restore-orphans` moves back anything that turns out to have no surviving copy.
+
+The same three actions are available as buttons in the GUI **Utilities** tab.
 
 ### Modes
 
@@ -205,6 +244,9 @@ Or use the **Gallery tab** in the GUI to launch and stop the server with one cli
 | `--backfill-meta` | Fill missing `url`/`width`/`height` in catalog via `resolve_media` |
 | `--backfill-full-meta` | Fill full prompt/seed/model in catalog via `getTaskById`; also fills url/width/height |
 | `--export-csv` | Export `catalog.db` to `catalog_export.csv` (interop / spreadsheet backup) |
+| `--audit` | Read-only duplicate report of the whole backup folder → `audit_report.csv` |
+| `--dedup` | Quarantine redundant duplicate copies to `_duplicates/` (dry-run unless `--apply`); reconciles the catalog |
+| `--verify-dupes` | Confirm every file in `_duplicates/` is redundant (byte/pixel-identical to a kept copy) before deleting |
 | `--organize` | Rename files in `images/` to `prompt_taskid_mediaid` scheme using `catalog.db` |
 | `--organize-live` | Same naming applied live during download |
 | `--organize-adv` | Folder sort: move files into `batches/` and `YYYY-MM/` folders; embed metadata into PNG/JPEG |
@@ -217,10 +259,18 @@ Or use the **Gallery tab** in the GUI to launch and stop the server with one cli
 |---|---|---|
 | `--token TOKEN` | — | Bearer token (else `PIXAI_TOKEN` env or `token.txt`) |
 | `--out DIR` | `pixai_backup` | Output folder |
-| `--page-size N` | `20` | Tasks per request during download (try `5000` for speed; keep ≤ ~8000) |
+| `--page-size N` | `250` | Tasks per request during download (higher = fewer round-trips; keep ≤ ~8000) |
+| `--workers N` | `4` | Parallel download workers. 1 = serial/polite; 6–8 for bulk pulls. Ignored for `--collect-only` and `--organize-adv-live` |
+| `--update` | off | Incremental run: stop paging once a run of pages is fully on disk (newest-first) |
+| `--update-grace N` | `2` | Consecutive all-on-disk pages before `--update` stops (raise if your history has gaps) |
+| `--accurate-count` | off | Walk the whole API to count library size for the progress bar (default uses the fast catalog estimate) |
 | `--max N` | `0` (all) | Stop after N tasks — use small numbers for testing |
-| `--delay SECONDS` | `0.4` | Pause between requests |
+| `--delay SECONDS` | `0.4` | Pause between requests (serial mode; concurrency paces parallel runs) |
 | `--count-page-size N` | `5000` | Page size for `--count` |
+| `--dedup-delete` | off | With `--dedup --apply`, delete redundant copies instead of quarantining |
+| `--no-content` | off | With `--audit`/`--dedup`, skip Class-B content hashing (faster; same-media_id dupes only) |
+| `--apply` | off | With `--dedup`, actually perform the moves/deletes (default is dry-run) |
+| `--restore-orphans` | off | With `--verify-dupes`, move any orphaned quarantined files back to `images/` |
 | `--full-meta` | off | Fetch full prompt, seed, steps, sampler, CFG, and model name per task |
 | `--name-length N` | `60` | Max prompt characters used in filenames |
 | `--name-sep CHAR` | `_` | Word separator in filenames (`_` or `-`) |
@@ -258,6 +308,9 @@ pixai_backup/
 ├─ 2026-06/
 │   └─ ...
 ├─ images/                       (empties out as files are moved)
+├─ gallery/thumbs/               gallery thumbnails (auto-generated, git-ignored)
+├─ _duplicates/                  quarantine from --dedup (reversible; delete to reclaim space)
+├─ audit_report.csv              written by --audit
 └─ catalog.db
 ```
 
@@ -331,17 +384,43 @@ python pixai_gallery_backup.py --backfill-full-meta
 | Windows MAX_PATH (260 chars) | Batch images use short names (`NN_<mediaid>.ext`); `--name-length` defaults to 60 |
 | `--count` server errors | Lower `--count-page-size` to 1,000–2,000 if you see `Internal server error` (PixAI rejects very large page requests) |
 | Gallery after `--organize-adv` | Thumbnails are keyed by `media_id` and unaffected; gallery falls back to media-ID search if the `filename` column is stale |
+| Progress bar overshoots 100% | Cosmetic only — on resume runs the bar seeds with the on-disk count and also ticks each item as it's re-checked, so the "checked" number can read past the total. The run itself is correct. |
 
 ---
 
 ## Changelog
 
-### Unreleased
+### v1.2.0 — Duplicate audit/dedup, gallery overhaul, parallel & incremental downloads
 
-- **Gallery LAN mode** — optional bind to `0.0.0.0` so you can browse the gallery from other devices on your network
-- **Progress bars** on the GUI Organize, Convert, and Utilities tabs, with matching CLI counters for organize/convert runs
-- **Auto-load `token.txt`** on GUI startup; the Load button uses it directly when present
-- Fixed an `UnboundLocalError` when running with `--full-meta` (initialization moved before first reference)
+**Downloads — much faster, especially follow-up runs**
+- **Parallel downloads** — `--workers N` (default 4) fetches images concurrently via a bounded thread pool. `--workers 1` keeps the old serial/polite behavior.
+- **Instant resume** — resume is now an O(1) in-memory media-ID index built from a single startup scan, instead of a full-tree scan per image. Re-runs no longer slow down as the library grows.
+- **Incremental `--update` mode** — stops paging once a run of pages is already fully on disk (newest-first), so routine updates finish in seconds. `--update-grace` tunes the stop threshold.
+- **No more network pre-count** — progress total comes from the catalog (instant); `--accurate-count` forces the old full-history API count. Startup disk scan rewritten with `os.scandir`.
+- **`--page-size` default raised** from 20 to 250 (far fewer round-trips).
+
+**Duplicate audit & dedup**
+- **`--audit`** — read-only duplicate report (same `media_id` across folders + byte-identical-different-id via size-bucketed hashing); writes `audit_report.csv`; independent of `catalog.db`.
+- **`--dedup`** — quarantines redundant copies to `_duplicates/` (keeps the most-organized copy), dry-run by default; `--apply`, `--dedup-delete`, `--no-content`; reconciles the catalog and auto-runs a verify pass.
+- **`--verify-dupes`** — proves every quarantined file is byte/pixel-identical to a surviving copy before deletion; `--restore-orphans` recovers any with no surviving copy.
+- **Root-cause fix** — single-image organize files were renamed to bare `<mediaid>.ext`, which resume's old `*_<mediaid>.*` matcher missed, causing re-downloads and orphaned flat copies (the `images/`+month duplication). Media-ID → file resolution now goes through one shared matcher that recognizes both naming layouts.
+
+**Gallery**
+- **Wildcard prompt search** — `*` / `?` wildcards and multi-word AND (plain words stay broad substring matches).
+- **Year/Month date pickers**, **searchable Model/Batch** fields (datalist), **per-page selector**, **Min-rating filter**, **thumbnail-size slider**, **Resolution/Aspect sorts**.
+- **Active-filter chips** with one-click removal; thumbnail loading skeletons; friendlier empty state.
+- **Collection Health dashboard** (`/health`) — storage, full-meta %, duplicates + reclaimable, missing-file count, images-by-month, top models.
+- **Detail page** — Copy Prompt, Find Similar (by model), View Batch.
+- **Visual refresh** — brand mark + favicon; dark theme retuned to a deep-violet/teal/gold palette.
+
+**GUI**
+- Download tab: **Workers** and **Update mode** controls; page-size default 250.
+- Utilities tab: **Audit Duplicates / Dedup / Verify Quarantine** buttons.
+- Gallery LAN mode; progress bars on Organize/Convert/Utilities; auto-load `token.txt` on startup.
+
+**Other**
+- Fixed an `UnboundLocalError` when running with `--full-meta`.
+- **120 tests** (up from 81).
 
 ### v1.1.0 — SQLite catalog, gallery performance, batch filter, focus mode
 
