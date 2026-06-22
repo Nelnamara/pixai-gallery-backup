@@ -443,10 +443,19 @@ class DownloadTab(QWidget):
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Page size:"))
         self.page_size = QSpinBox()
-        self.page_size.setRange(1, 500)
-        self.page_size.setValue(settings.get("page_size", 20))
+        self.page_size.setRange(1, 8000)
+        self.page_size.setValue(settings.get("page_size", 250))
         self.page_size.setFixedWidth(70)
         r1.addWidget(self.page_size)
+        r1.addSpacing(16)
+        r1.addWidget(QLabel("Workers:"))
+        self.workers = QSpinBox()
+        self.workers.setRange(1, 16)
+        self.workers.setValue(settings.get("workers", 4))
+        self.workers.setFixedWidth(55)
+        self.workers.setToolTip("Parallel download workers. 1 = serial/polite; "
+                                "higher saturates bandwidth on bulk pulls.")
+        r1.addWidget(self.workers)
         r1.addSpacing(16)
         r1.addWidget(QLabel("Max tasks (0=all):"))
         self.max_tasks = QSpinBox()
@@ -629,6 +638,7 @@ class DownloadTab(QWidget):
             update=self.update_mode.isChecked(),
             update_grace=2,
             accurate_count=False,
+            workers=self.workers.value(),
             count_page_size=5000,
         )
 
@@ -715,6 +725,7 @@ class DownloadTab(QWidget):
             "full_meta":    self.full_meta.isChecked(),
             "collect_only": self.collect_only.isChecked(),
             "update_mode":  self.update_mode.isChecked(),
+            "workers":      self.workers.value(),
         }
 
 

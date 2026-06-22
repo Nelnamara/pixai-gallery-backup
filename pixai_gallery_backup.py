@@ -1776,6 +1776,27 @@ def run_download(args, progress=None):
     update_mode = getattr(args, "update", False)
     update_grace = getattr(args, "update_grace", 2)
     consecutive_known_pages = 0
+
+    # Parallel downloads: only for the common flat-download case. collect_only does
+    # no downloads, and organize-adv-live has per-folder side effects that assume
+    # serial ordering -- both fall back to the serial path.
+    workers = max(1, getattr(args, "workers", 1) or 1)
+    parallel = (workers > 1
+                and not getattr(args, "collect_only", False)
+                and not getattr(args, "organize_adv_live", False))
+    if parallel:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        print("Parallel downloads: {} workers.\n".format(workers))
+
+    def _row_for(meta, mid, full_meta, filename="", url="", w="", h=""):
+        return {
+            "task_id": meta["task_id"], "media_id": mid,
+            "filename": filename, "url": url, "width": w, "height": h,
+            "prompt_preview": meta["prompt_preview"],
+            "status": meta["status"], "created_at": meta["created_at"],
+            **_merge_full(full_meta, known.get(mid, {})),
+        }
+
     try:
         while True:
             page += 1
@@ -1790,6 +1811,106 @@ def run_download(args, progress=None):
 
             page_rows = []  # rows accumulated this page; upserted after each page
             page_new = 0    # media_ids on this page NOT already on disk (for --update)
+
+            if parallel:
+                # Pass 1 (serial, local): emit raw json, handle on-disk skips, and
+                # build a worklist of media_ids that actually need fetching.
+                worklist = []
+                for edge in edges:
+                    node = edge.get("node", edge)
+                    raw_f.write(json.dumps(node, ensure_ascii=False) + "\n")
+                    meta = extract_meta(node)
+                    all_mids = media_ids_for(node)
+                    full_meta = {}
+                    if use_full_meta:
+                        tid = meta["task_id"]
+                        if tid not in _full_meta_cache:
+                            task_data = task_detail_gql(session, tid)
+                            fm = extract_full_meta(task_data)
+                            if fm.get("model_id"):
+                                fm["model_name"] = model_name_gql(session, fm["model_id"])
+                            _full_meta_cache[tid] = fm
+                            time.sleep(args.delay)
+                        full_meta = _full_meta_cache.get(tid, {})
+                    for mid in all_mids:
+                        existing = on_disk_by_mid.get(mid)
+                        if existing:
+                            dl["skip"] += 1
+                            k = known.get(mid, {})
+                            row = _row_for(meta, mid, full_meta,
+                                           filename=existing.name, url=k.get("url", ""),
+                                           w=k.get("width", ""), h=k.get("height", ""))
+                            row["prompt_preview"] = k.get("prompt_preview") or meta["prompt_preview"]
+                            row["status"] = k.get("status") or meta["status"]
+                            row["created_at"] = k.get("created_at") or meta["created_at"]
+                            page_rows.append(row)
+                            written.add(mid)
+                            _tick()
+                            continue
+                        page_new += 1
+                        stem = img_dir / build_stem_name(
+                            meta["prompt_preview"], meta["task_id"], mid,
+                            args.name_length, args.name_sep)
+                        worklist.append({"meta": meta, "mid": mid, "stem": stem,
+                                         "full_meta": full_meta})
+
+                # Pass 2 (parallel): resolve + download. Only the per-item network
+                # and file write run in threads; all shared state is mutated here
+                # in the main thread as futures complete.
+                def _work(item):
+                    url, info = resolve_media(session, item["mid"])
+                    if not url:
+                        return item, "missing", "", info, None
+                    status, path = download(
+                        session, url, item["stem"],
+                        convert=getattr(args, "convert", None),
+                        jpeg_quality=getattr(args, "jpeg_quality", 92),
+                        jpeg_bg=getattr(args, "jpeg_bg", "white"),
+                        keep_webp=getattr(args, "keep_webp", False))
+                    return item, status, url, info, path
+
+                if worklist:
+                    with ThreadPoolExecutor(max_workers=workers) as ex:
+                        for fut in as_completed([ex.submit(_work, it) for it in worklist]):
+                            item, status, url, info, path = fut.result()
+                            meta, mid, full_meta = item["meta"], item["mid"], item["full_meta"]
+                            w, h = info.get("width", ""), info.get("height", "")
+                            if status == "missing":
+                                dl["missing"] += 1
+                                page_rows.append(_row_for(meta, mid, full_meta, w=w, h=h))
+                            else:
+                                dl[status] += 1
+                                page_rows.append(_row_for(
+                                    meta, mid, full_meta,
+                                    filename=path.name if path else "", url=url, w=w, h=h))
+                                if path and status in ("ok", "skip"):
+                                    on_disk_by_mid[mid] = path
+                            written.add(mid)
+                            _tick()
+
+                if page_rows:
+                    save_catalog(db_path, page_rows)
+                seen += len(edges)
+                if args.max and seen >= args.max:
+                    print("Reached --max limit.")
+                    break
+                if update_mode:
+                    if page_new == 0:
+                        consecutive_known_pages += 1
+                        if consecutive_known_pages >= update_grace:
+                            print("\n--update: {} consecutive pages already on disk; "
+                                  "stopping (older items are already downloaded)."
+                                  .format(consecutive_known_pages))
+                            break
+                    else:
+                        consecutive_known_pages = 0
+                raw_f.flush()
+                pi = conn.get("pageInfo", {})
+                if not pi.get("hasPreviousPage"):
+                    break
+                before = pi.get("startCursor")
+                time.sleep(args.delay)
+                continue
 
             for edge in edges:
                 node = edge.get("node", edge)
@@ -1999,7 +2120,12 @@ def main():
                          "and token.txt)")
     ap.add_argument("--out", default="pixai_backup",
                     help="output folder for images and catalog (default: pixai_backup)")
-    ap.add_argument("--page-size", type=int, default=20, help="items per page (try 50)")
+    ap.add_argument("--page-size", type=int, default=250,
+                    help="tasks per API page (default 250; fewer round-trips. Keep <~8000)")
+    ap.add_argument("--workers", type=int, default=4,
+                    help="parallel download workers (default 4). 1 = serial/polite. "
+                         "Higher saturates bandwidth on bulk first-time pulls; ignored for "
+                         "--collect-only and --organize-adv-live.")
     ap.add_argument("--max", type=int, default=0, help="stop after N tasks (0=all)")
     ap.add_argument("--update", action="store_true",
                     help="incremental follow-up run: stop paging once a run of pages is "

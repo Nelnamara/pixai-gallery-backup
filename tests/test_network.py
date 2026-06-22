@@ -316,3 +316,24 @@ def test_populated_catalog_skips_network_count(tmp_path, mocker):
     core.run_download(_dl_args(tmp_path, update=True, update_grace=1))
 
     assert qc.call_count == 0  # catalog estimate used, no network pre-count
+
+
+def test_parallel_workers_download_new_skip_known(tmp_path, mocker):
+    # workers>1 path: new items fetched concurrently, on-disk items skipped.
+    (tmp_path / "images").mkdir(parents=True)
+    (tmp_path / "images" / "x_known.webp").write_bytes(b"img")
+    dl = _patch_download_layer(mocker)
+
+    def _multi_page(mids, has_prev, cursor=""):
+        edges = [{"node": {"id": "t_" + m, "mediaId": m, "batchMediaIds": [],
+                           "createdAt": "2024-01-01", "promptsPreview": "p", "status": "ok"}}
+                 for m in mids]
+        return {"user": {"taskSummaries": {
+            "edges": edges, "pageInfo": {"hasPreviousPage": has_prev, "startCursor": cursor}}}}
+
+    mocker.patch.object(core, "gql", side_effect=[_multi_page(["a", "b", "known"], False)])
+    core.run_download(_dl_args(tmp_path, workers=4))
+
+    names = [str(c.args[2]) for c in dl.call_args_list]
+    assert sum("known" in n for n in names) == 0          # on-disk skipped
+    assert any("_a" in n for n in names) and any("_b" in n for n in names)  # both new fetched
