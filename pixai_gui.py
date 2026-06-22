@@ -1086,6 +1086,10 @@ class UtilitiesTab(QWidget):
         backfill_row = QHBoxLayout()
         backfill_row.addWidget(self.btn_backfill)
         backfill_row.addWidget(self.btn_backfill_full)
+        self.chk_with_loras = QCheckBox("incl. LoRAs")
+        self.chk_with_loras.setToolTip("With Backfill Full Meta, also re-fetch older rows that "
+                                       "lack LoRA data (populates the loras column; long run)")
+        backfill_row.addWidget(self.chk_with_loras)
         backfill_row.addStretch()
 
         export_row = QHBoxLayout()
@@ -1222,6 +1226,7 @@ class UtilitiesTab(QWidget):
 
     def _run_backfill_full(self):
         args = self._base_args()
+        args.with_loras = self.chk_with_loras.isChecked()
         self._run(core.run_backfill_full_meta, args)
         args.progress = self._worker.progress.emit
         self._worker.progress.connect(self._update_progress)
@@ -1322,12 +1327,13 @@ class _GalleryServerThread(QThread):
     log   = Signal(str)
     ready = Signal(str)   # emits the base URL when server is ready
 
-    def __init__(self, out_dir, port, rebuild_thumbs, host="127.0.0.1", parent=None):
+    def __init__(self, out_dir, port, rebuild_thumbs, host="127.0.0.1", https=False, parent=None):
         super().__init__(parent)
         self._out_dir = out_dir
         self._port = port
         self._rebuild_thumbs = rebuild_thumbs
         self._host = host
+        self._https = https
         self._server = None
 
     def run(self):
@@ -1364,13 +1370,25 @@ class _GalleryServerThread(QThread):
                     display_ip = "0.0.0.0"
             else:
                 display_ip = self._host
-            base_url = f"http://{display_ip}:{self._port}/"
+            ssl_context = None
+            scheme = "http"
+            if self._https:
+                try:
+                    import cryptography  # noqa: F401
+                    ssl_context = "adhoc"
+                    scheme = "https"
+                except ImportError:
+                    self.log.emit("--https needs 'cryptography' (pip install cryptography); using HTTP.")
+            base_url = f"{scheme}://{display_ip}:{self._port}/"
             self.log.emit(f"Gallery server starting on {base_url}")
+            if self._https and ssl_context:
+                self.log.emit("  (self-signed HTTPS: phone/browser shows a one-time 'proceed anyway' warning)")
             if self._host == "0.0.0.0":
-                self.log.emit(f"  (also accessible at http://127.0.0.1:{self._port}/ locally)")
+                self.log.emit(f"  (also accessible at {scheme}://127.0.0.1:{self._port}/ locally)")
             self.ready.emit(base_url)
             from werkzeug.serving import make_server
-            self._server = make_server(self._host, self._port, app, threaded=True)
+            self._server = make_server(self._host, self._port, app, threaded=True,
+                                       ssl_context=ssl_context)
             self._server.serve_forever()
         except Exception as exc:
             self.log.emit(f"[ERROR] {exc}")
@@ -1421,6 +1439,14 @@ class GalleryTab(QWidget):
             "Note: Windows Firewall may prompt you to allow access the first time.")
         cg.addWidget(self.lan_mode)
 
+        self.https_mode = QCheckBox("Serve over HTTPS  (needed for PWA install on a phone; self-signed)")
+        self.https_mode.setChecked(settings.get("gallery_https", False))
+        self.https_mode.setToolTip(
+            "Serves the gallery over self-signed HTTPS so a phone over LAN can install it "
+            "as an app (PWA) and use the offline cache.\nRequires 'pip install cryptography'. "
+            "Browsers show a one-time 'proceed anyway' certificate warning.")
+        cg.addWidget(self.https_mode)
+
         btn_row = QHBoxLayout()
         self.btn_launch = QPushButton("▶  Launch Server")
         self.btn_launch.setObjectName("btn_start")
@@ -1456,7 +1482,8 @@ class GalleryTab(QWidget):
         host = "0.0.0.0" if self.lan_mode.isChecked() else "127.0.0.1"
         self.log.clear_log()
         self._server_thread = _GalleryServerThread(
-            self._bar.out, port, self.rebuild_thumbs.isChecked(), host=host
+            self._bar.out, port, self.rebuild_thumbs.isChecked(), host=host,
+            https=self.https_mode.isChecked()
         )
         self._server_thread.log.connect(self.log.append_line)
         self._server_thread.ready.connect(self._on_ready)
@@ -1495,6 +1522,7 @@ class GalleryTab(QWidget):
             "gallery_port":           self.port.value(),
             "gallery_rebuild_thumbs": self.rebuild_thumbs.isChecked(),
             "gallery_lan":            self.lan_mode.isChecked(),
+            "gallery_https":          self.https_mode.isChecked(),
         }
 
 

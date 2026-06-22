@@ -1841,12 +1841,22 @@ def run_backfill_full_meta(args):
             "See README -> Full Meta for capture instructions.")
 
     rows = load_catalog(db_path)
+    with_loras = getattr(args, "with_loras", False)
 
-    # Work per unique task_id (one API call covers all media in that task)
-    needs_fill = [r for r in rows if not r.get("prompt_full")]
+    # Work per unique task_id (one API call covers all media in that task).
+    # --with-loras also re-processes rows that have full meta but a blank `loras`
+    # column (e.g. backfilled before LoRA tracking existed). It re-fetches their
+    # getTaskById to extract parameters.lora.
+    def _needs(r):
+        if not r.get("prompt_full"):
+            return True
+        if with_loras and r.get("task_id") and not r.get("loras"):
+            return True
+        return False
+    needs_fill = [r for r in rows if _needs(r)]
     task_ids = list(dict.fromkeys(r["task_id"] for r in needs_fill if r.get("task_id")))
-    print("Found {:,} rows missing full meta across {:,} unique tasks.".format(
-        len(needs_fill), len(task_ids)))
+    print("Found {:,} rows to fill across {:,} unique tasks{}.".format(
+        len(needs_fill), len(task_ids), " (incl. LoRAs)" if with_loras else ""))
     if not task_ids:
         print("Nothing to backfill.")
         return
@@ -2501,6 +2511,9 @@ def main():
     ap.add_argument("--backfill-full-meta", action="store_true",
                     help="fill in prompt_full/seed/model/etc in catalog.db via getTaskById "
                          "for rows that lack them; also backfills url/width/height as a bonus, then exit")
+    ap.add_argument("--with-loras", action="store_true",
+                    help="with --backfill-full-meta, ALSO re-fetch rows that have full meta but "
+                         "no LoRA data yet (populates the loras column for older images; long run)")
     ap.add_argument("--export-csv", action="store_true",
                     help="export catalog.db to catalog.csv for interop/backup, then exit")
     ap.add_argument("--sync-artworks", action="store_true",

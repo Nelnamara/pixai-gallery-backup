@@ -1995,6 +1995,10 @@ def main():
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--host", default="127.0.0.1",
                     help="bind address (default 127.0.0.1; use 0.0.0.0 for LAN)")
+    ap.add_argument("--https", action="store_true",
+                    help="serve over self-signed HTTPS (needed for PWA install / service "
+                         "worker on a phone over LAN; requires the 'cryptography' package; "
+                         "browsers show a one-time certificate warning)")
     ap.add_argument("--rebuild-thumbs", action="store_true",
                     help="regenerate all thumbnails even if they already exist")
     args = ap.parse_args()
@@ -2020,11 +2024,24 @@ def main():
     print("Building thumbnails (new only — use --rebuild-thumbs to force all)...")
     build_thumbnails(rows, out_dir, thumb_dir, force=args.rebuild_thumbs)
 
+    ssl_context = None
+    scheme = "http"
+    if getattr(args, "https", False):
+        try:
+            import cryptography  # noqa: F401  (werkzeug 'adhoc' needs it)
+            ssl_context = "adhoc"
+            scheme = "https"
+        except ImportError:
+            print("--https needs the 'cryptography' package:  pip install cryptography\n"
+                  "Falling back to HTTP.")
+
     app = create_app(out_dir)
-    print("\nGallery ready ->  http://{}:{}/".format(
-        "localhost" if args.host == "127.0.0.1" else args.host, args.port))
+    print("\nGallery ready ->  {}://{}:{}/".format(
+        scheme, "localhost" if args.host == "127.0.0.1" else args.host, args.port))
+    if ssl_context:
+        print("(self-signed HTTPS: your browser/phone will show a one-time 'proceed anyway' warning)")
     print("Press Ctrl+C to stop.\n")
-    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+    app.run(host=args.host, port=args.port, debug=False, threaded=True, ssl_context=ssl_context)
 
 
 if __name__ == "__main__":
