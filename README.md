@@ -35,15 +35,11 @@ A PySide6 desktop GUI (`pixai_gui.py`) wraps the full workflow in a tabbed windo
 
 | Tab | What it does |
 |---|---|
-| **Download** | Configure token, output folder, page size, **workers**, **update mode**, organize mode, conversion, collect-only, and full-meta; Start / Stop |
+| **Download** | Output folder, page size, **workers**, **update mode**, organize mode, conversion, collect-only, and full-meta; Start / Stop. (Auth comes from `PIXAI_API_KEY` in `config.json`; an optional Token field remains for the legacy browser-token path) |
 | **Organize** | Post-download rename (`--organize`) or full folder sort (`--organize-adv`); dry-run preview |
 | **Convert** | Batch-convert existing `.webp` files to PNG or JPEG in place (parallel) |
 | **Utilities** | Probe, Count, Catalog Stats, Backfill url/width/height, Backfill Full Meta (+ incl. LoRAs), Export CSV, **Sync Artworks** (+ incl. videos), **Fix Model Names**, **Account Info**, **Audit Duplicates / Dedup / Verify Quarantine**; configurable API delay and **Workers** |
 | **Gallery** | Launch / stop the local gallery server; configurable port; LAN mode; **HTTPS** option; auto-builds thumbnails on start (parallel) |
-
-![GUI Download tab](screenshots/04_gui_download.png)
-
-![GUI Gallery tab](screenshots/06_gui_gallery.png)
 
 Settings are saved to `pixai_gui_settings.json` next to the script (git-ignored).
 
@@ -89,88 +85,39 @@ pip install requests truststore pillow PySide6 flask
 
 ## Configuration
 
-`config.json` lives next to the scripts and is git-ignored.
-
-### Recommended: use an official API key (no expiring login)
-
-Generate an API key at [platform.pixai.art](https://platform.pixai.art) (you can set its lifetime up to ~2 years) and put it in `config.json` as `PIXAI_API_KEY`. It's sent as the Bearer credential for **every** call — listing, media resolution, full-meta, model names — so you **don't need `U3T` or a browser token**, and you never have to recapture an expiring login. You still need `USER_ID` and `PERSISTED_QUERY_HASH` (captured once from DevTools, below); they only change if PixAI updates their frontend.
+`config.json` lives next to the scripts and is git-ignored. Copy `config.example.json` to `config.json` and fill in three values:
 
 ```json
-"PIXAI_API_KEY": "your-key",
+"PIXAI_API_KEY": "your-api-key",
 "USER_ID": "your-numeric-id",
 "PERSISTED_QUERY_HASH": "captured-hash"
 ```
 
-If you'd rather not create a key, leave `PIXAI_API_KEY` blank and use the browser-JWT path (capture `U3T` too, and supply a token via `token.txt` / `PIXAI_TOKEN` / `--token`).
+### Step 1 — Get an API key (one minute, no expiry headaches)
 
-Copy `config.example.json` to `config.json` and fill in the fields below.
+Generate an official API key at [platform.pixai.art](https://platform.pixai.art) — you can set its lifetime **up to ~2 years**. Paste it into `config.json` as `PIXAI_API_KEY`.
 
----
+That key is sent as the Bearer credential for **every** call — listing, media resolution, full-meta, model names. There is **no expiring browser token to capture or re-capture**, and you never touch the `Authorization` header by hand. This is the only credential that ever needs refreshing, and it lasts up to two years.
 
-### Step 1 — Find your values in DevTools
+### Step 2 — Capture `USER_ID` + `PERSISTED_QUERY_HASH` (once)
 
-All required config values — including your numeric `USER_ID` — come from the browser's Network panel. PixAI uses your username (`@yourname`) in the URL, not your numeric ID, so the address bar won't help.
+PixAI has no public endpoint for listing *your own* generation history, so the listing replays the same persisted GraphQL query the website uses. That query needs two values, captured once from the browser (they only change if PixAI overhauls their frontend):
 
 1. Log in to [pixai.art](https://pixai.art) and open your gallery or profile page
-2. Press **F12** to open DevTools → click the **Network** tab
-3. Type `graphql` in the filter box at the top of the Network panel
-4. Scroll the page slightly so requests fire
-5. Click any row named `listUserTaskSummaries` in the request list
-6. Click the **Payload** tab (Chrome) or **Request** tab (Firefox)
+2. Press **F12** → **Network** tab → type `graphql` in the filter box
+3. Scroll the page slightly so requests fire, then click a `listUserTaskSummaries` row
+4. Open the **Payload** tab (Chrome) / **Request** tab (Firefox)
 
-You will see something like this — **these are example field names only, your values will be different:**
+Copy two values into `config.json` (your numeric `USER_ID` isn't in the address bar — PixAI uses `@username` in URLs — which is why this step is needed):
 
-```
-operation      listUserTaskSummaries
-u3t            <your U3T value>
-operationName  listUserTaskSummaries
-variables      {"before":"...","last":20,"userId":"<your USER_ID>"}
-extensions     {"persistedQuery":{"sha256Hash":"<your PERSISTED_QUERY_HASH>"}}
-```
-
-![DevTools Payload tab showing u3t, userId, and sha256Hash fields](screenshots/02_devtools_payload.png)
-
-Copy these three values into `config.json`:
-- `u3t` field → `U3T`
 - `userId` inside `variables` → `USER_ID`
 - `sha256Hash` inside `extensions.persistedQuery` → `PERSISTED_QUERY_HASH`
 
----
-
-### Step 2 — Capture your Bearer token
-
-The Bearer token is **not** stored in `config.json` — it expires in hours or days and needs to be re-captured periodically (the GUI has a token field for this).
-
-While you still have DevTools open from Step 1:
-
-1. Stay on the **Headers** tab of the same `listUserTaskSummaries` request
-2. Scroll down to **Request Headers**
-3. Find the `Authorization` header — it starts with `Bearer eyJ...`
-4. Copy everything **after** `Bearer ` (the token itself)
-
-![DevTools Headers tab showing the Authorization Bearer token](screenshots/03_devtools_headers.png)
-
-Keep the token private — treat it like a password.
-
-**Provide it one of three ways:**
-
-```
-# Windows PowerShell
-$env:PIXAI_TOKEN="eyJ...your token..."
-
-# macOS / Linux
-export PIXAI_TOKEN="eyJ...your token..."
-```
-
-Or create `token.txt` next to the script containing just the token. Or paste it directly into the Token field in the GUI.
-
----
-
-### Optional — Full meta hashes
-
-Only needed for `--full-meta` and `--backfill-full-meta`. See [Full Meta](#full-meta-full-prompt-seed-model) for capture instructions.
+That's the entire setup. (For `--full-meta` you'll capture one more hash — see [Full Meta](#full-meta-full-prompt-seed-model).)
 
 > **`config.json` is git-ignored** and will never be committed.
+
+> **No API key?** You can instead run the legacy browser-token path: leave `PIXAI_API_KEY` blank, add a `U3T` value (also on the Payload tab), and supply the short-lived `Authorization: Bearer` token via `token.txt`, the `PIXAI_TOKEN` env var, or `--token`. This token expires every few hours and must be re-captured — the API key exists specifically to avoid that, so it's the recommended path.
 
 ---
 
@@ -223,13 +170,14 @@ python pixai_gallery_backup.py --organize-adv-live --convert png
 python pixai_gallery.py --out pixai_backup            # launch at http://127.0.0.1:5000
 python pixai_gallery.py --out pixai_backup --port 5757
 python pixai_gallery.py --out pixai_backup --host 0.0.0.0 --https  # LAN + self-signed HTTPS (mobile PWA)
+python pixai_gallery.py --out pixai_backup --rebuild-thumbs        # regenerate all thumbnails
 ```
+
+Gallery flags: `--port` (default 5000), `--host` (use `0.0.0.0` for LAN), `--https` (self-signed cert for mobile PWA install; needs `pip install cryptography`), `--rebuild-thumbs` (force-regenerate thumbnails). The gallery needs no API key — it reads only `catalog.db` and local files.
 
 Or use the **Gallery tab** in the GUI to launch and stop the server with one click.
 
-The gallery filter bar supports wildcard prompt search (`night*`, `a?c`, multiple words ANDed), searchable Model/Batch fields, Year/Month date pickers, a Min-rating filter, a per-page selector, and a thumbnail-size slider. The header links to a **Collection Health** dashboard (`/health`) showing storage used, full-meta coverage, duplicate count, missing files, images-by-month, and top models.
-
-![Local web gallery showing image grid with filters and star ratings](screenshots/05_gallery_view.png)
+The gallery filter bar supports wildcard prompt search (`night*`, `a?c`, multiple words ANDed), searchable Model/Batch fields, Year/Month date pickers, a Min-rating filter, a per-page selector, and a thumbnail-size slider. The header links to a **Collection Health** dashboard (`/health`) showing storage used, full-meta coverage, duplicate count, missing files, images-by-month, and top models, plus a **`/duplicates`** review page.
 
 ### Finding & Removing Duplicates
 
@@ -276,8 +224,10 @@ The same three actions are available as buttons in the GUI **Utilities** tab.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--token TOKEN` | — | Bearer credential override. Normally use `PIXAI_API_KEY` in `config.json` (preferred), else `PIXAI_TOKEN` env or `token.txt` |
+| `--token TOKEN` | — | Bearer credential override for the legacy browser-token path. Normally unused — set `PIXAI_API_KEY` in `config.json` instead |
 | `--out DIR` | `pixai_backup` | Output folder |
+| `--version` | — | Print the version and exit |
+| `--variant NAME` | auto | Force a media variant instead of auto-detecting the full-res `PUBLIC` one (e.g. `original`) |
 | `--page-size N` | `250` | Tasks per request during download (higher = fewer round-trips; keep ≤ ~8000) |
 | `--workers N` | `4` | Parallel workers. Applies to downloads **and** the batch jobs (`--backfill-meta`, `--backfill-full-meta`, `--fix-model-names`, `--sync-artworks --with-videos`, `--convert-existing`). 1 = serial/polite; 6–8 for bulk. Ignored for `--collect-only` and `--organize-adv-live` |
 | `--update` | off | Incremental run: stop paging once a run of pages is fully on disk (newest-first) |
@@ -381,19 +331,15 @@ By default the download only captures `prompt_preview` — a truncated ~100-char
 
 ### One-time config setup
 
-Open an image detail page on pixai.art, then in DevTools → Network → filter `graphql`:
+Full meta needs one more persisted-query hash. Open an image detail page on pixai.art, then in DevTools → Network → filter `graphql`:
 
 1. Find `getTaskById` — copy its `extensions.persistedQuery.sha256Hash` → `TASK_DETAIL_HASH`
-2. Find `getGenerationModelByVersionId` — copy its hash → `MODEL_DETAIL_HASH`
-
-Add both to `config.json` (**do not copy the placeholder text below — use your own captured values**):
 
 ```json
-"TASK_DETAIL_HASH": "<your value from getTaskById>",
-"MODEL_DETAIL_HASH": "<your value from getGenerationModelByVersionId>"
+"TASK_DETAIL_HASH": "<your value from getTaskById>"
 ```
 
-If these hashes stop working after a PixAI frontend update, recapture them the same way.
+The model-name lookup (`getGenerationModelByVersionId`) ships with a working default, so `MODEL_DETAIL_HASH` is optional — only add it if model names stop resolving after a PixAI frontend update. Recapture either hash the same way if they break.
 
 ### Usage
 
@@ -548,18 +494,11 @@ This release merges the `feature/gallery-server` branch and marks the completion
 
 ## Feature Requests
 
-Planned future enhancements, grouped by area:
+Planned future enhancements:
 
-### Backend / Catalog
-- **Tag system** — freeform tags per image stored as a catalog relation.
-
-### Gallery UI
-- **Persistent cross-page selection** — checkbox selections that survive pagination
-- **Bulk prompt edit** — edit `prompt_full` in the gallery and write back to the catalog
-- **Export selected** — download a ZIP of checked images from the gallery
-
-### Download & Sync
+- **Tag system** — freeform tags per image stored as a catalog relation
 - **PixAI favorites sync** — filter downloads to only favorited generations via `favoritedAt`
+- **Engagement-over-time** — snapshot like/view counts on each `--sync-artworks` run to chart growth (no historical backfill possible)
 
 ---
 

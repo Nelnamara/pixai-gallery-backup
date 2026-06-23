@@ -1,19 +1,19 @@
 {
-  "_comment": "Copy this file to config.json and replace every value below with YOUR OWN values. config.json is git-ignored and will never be committed.",
+  "_comment": "Copy this file to config.json and replace the values with YOUR OWN. config.json is git-ignored and will never be committed.",
 
-  "_comment_api_key": "PREFERRED auth. Generate an official API key at platform.pixai.art (you can set its lifetime up to ~2 years). When present it is used as the Bearer credential for ALL calls, so you do NOT need U3T or a browser token, and never have to recapture an expiring login. Leave blank to fall back to the browser-JWT path (token.txt / PIXAI_TOKEN).",
-  "PIXAI_API_KEY": "",
+  "_comment_api_key": "Your official API key from platform.pixai.art (set its lifetime up to ~2 years). Sent as the Bearer credential for ALL calls, so there is NO expiring browser token to capture. This is the only credential that ever needs refreshing.",
+  "PIXAI_API_KEY": "YOUR_PIXAI_API_KEY",
 
-  "_comment_user_id": "Your PixAI numeric user ID — found in your profile URL: pixai.art/profile/<YOUR_ID_HERE>",
+  "_comment_user_id": "Your PixAI numeric user ID. NOT in the address bar (PixAI uses @username in URLs). Capture from DevTools -> Network -> graphql -> a listUserTaskSummaries row -> Payload -> variables.userId. See README Step 2.",
   "USER_ID": "YOUR_PIXAI_USER_ID",
 
-  "_comment_u3t": "Only needed if you are NOT using PIXAI_API_KEY. Captured from DevTools — the 'u3t' field in the listUserTaskSummaries request.",
-  "U3T": "YOUR_U3T_VALUE",
-
-  "_comment_hash": "Captured from DevTools Network tab — see README Step 2. This is extensions.persistedQuery.sha256Hash from the listUserTaskSummaries request.",
+  "_comment_hash": "From the same listUserTaskSummaries request: extensions.persistedQuery.sha256Hash. Only changes if PixAI overhauls their frontend.",
   "PERSISTED_QUERY_HASH": "YOUR_PERSISTED_QUERY_HASH",
 
-  "_comment_full_meta": "Optional — only needed for --full-meta and --backfill-full-meta. Capture from DevTools while viewing an image detail page (see README -> Full Meta). These values are different from PERSISTED_QUERY_HASH above.",
+  "_comment_full_meta": "Optional - only for --full-meta / --backfill-full-meta. Capture getTaskById's sha256Hash from an image detail page (see README -> Full Meta). MODEL_DETAIL_HASH has a working default; only set it if model names stop resolving.",
   "TASK_DETAIL_HASH": "YOUR_TASK_DETAIL_HASH",
-  "MODEL_DETAIL_HASH": "YOUR_MODEL_DETAIL_HASH"
+  "MODEL_DETAIL_HASH": "",
+
+  "_comment_legacy": "Legacy fallback ONLY if you are not using PIXAI_API_KEY. U3T is the 'u3t' field on the same Payload tab; the short-lived Bearer token then goes in token.txt / PIXAI_TOKEN / --token and must be re-captured every few hours. Leave U3T blank when using an API key.",
+  "U3T": ""
 }
