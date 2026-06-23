@@ -11,14 +11,16 @@ PixAI's terms grant users copyright of their own generations. This tool is rate-
 ## Features
 
 - **Full-resolution downloads** — bypasses the 20-image gallery limit; fetches every generation at the original size
-- **Fast parallel downloads** — `--workers N` (default 4) fetches images concurrently; tuned for bulk first-time pulls
+- **Stable API-key auth** — set `PIXAI_API_KEY` (an official key, lifetime up to ~2 years) and it authenticates every call; no expiring browser login to recapture
+- **Fast parallel downloads** — `--workers N` (default 4) fetches images concurrently; the same flag also parallelizes the batch jobs (backfill, fix-model-names, sync videos, convert, thumbnails)
 - **Instant resume** — an in-memory media-ID index makes re-runs skip already-saved images with no per-item disk scan (resume stays fast no matter how large the library grows)
 - **Incremental update mode** — `--update` stops paging once it reaches your already-downloaded history, so routine "grab what's new" runs finish in seconds instead of re-walking everything
 - **Persistent catalog** — `catalog.db` (SQLite) is a deduplicated, indexed database keyed by `media_id`; prior-session rows are never lost across interrupted or multi-session downloads; auto-migrates from `catalog.csv` if upgrading
-- **Full generation metadata** — `--full-meta` captures the complete prompt, seed, steps, sampler, CFG scale, and human-readable model name; `--backfill-full-meta` fills existing catalog rows retroactively
+- **Full generation metadata** — `--full-meta` captures the complete prompt, seed, steps, sampler, CFG scale, human-readable model name, and **LoRAs**; `--backfill-full-meta` fills existing catalog rows retroactively
+- **Published-artwork sync** — `--sync-artworks` pulls your published pieces' titles, tags/contest labels, NSFW flag, and like/comment/aesthetic data into the catalog; `--with-videos` backs up animated-artwork video files too
 - **Duplicate audit & dedup** — `--audit` scans the whole backup folder for duplicate images (same `media_id` across folders, plus byte-identical copies); `--dedup` quarantines the redundant copies (keeping the most-organized one) and `--verify-dupes` proves the quarantine is safe before you delete it
-- **Local web gallery** — browse, filter, rate, and delete your images from a browser; wildcard prompt search, searchable model/batch filters, year/month date pickers, adjustable thumbnail size, and a per-page selector
-- **Collection Health dashboard** — `/health` page summarizing storage used, full-meta coverage, duplicates, missing files, images-by-month, and top models
+- **Local web gallery** — browse, filter, rate, and delete from a browser: wildcard prompt search; searchable model/batch, tag/contest, LoRA, min-rating, and published-only filters; year/month date pickers; aesthetic/likes/resolution sorts; a lightbox (swipe + slideshow); cross-page selection with **Download ZIP**; saved filter presets; privacy blur; mobile/tablet layout and PWA
+- **Collection Health dashboard** — `/health` page: storage used, full-meta %, duplicates, missing files, total likes, images-by-month, top models, top LoRAs, top tags, and a prompt word-cloud
 - **Format conversion** — convert WebP to PNG or JPEG on download, or batch-convert existing files
 - **Organize mode** — sorts files into `batches/` and `YYYY-MM/` folders; embeds metadata into PNG/JPEG files
 - **Rate limiting** — configurable delay between requests (default 0.4 s)
@@ -34,9 +36,9 @@ A PySide6 desktop GUI (`pixai_gui.py`) wraps the full workflow in a tabbed windo
 |---|---|
 | **Download** | Configure token, output folder, page size, **workers**, **update mode**, organize mode, conversion, collect-only, and full-meta; Start / Stop |
 | **Organize** | Post-download rename (`--organize`) or full folder sort (`--organize-adv`); dry-run preview |
-| **Convert** | Batch-convert existing `.webp` files to PNG or JPEG in place |
-| **Utilities** | Probe, Count, Catalog Stats, Backfill url/width/height, Backfill Full Meta, Export CSV, **Audit Duplicates / Dedup / Verify Quarantine**; configurable API delay |
-| **Gallery** | Launch / stop the local gallery server; configurable port; LAN mode; auto-builds thumbnails on start |
+| **Convert** | Batch-convert existing `.webp` files to PNG or JPEG in place (parallel) |
+| **Utilities** | Probe, Count, Catalog Stats, Backfill url/width/height, Backfill Full Meta (+ incl. LoRAs), Export CSV, **Sync Artworks** (+ incl. videos), **Fix Model Names**, **Account Info**, **Audit Duplicates / Dedup / Verify Quarantine**; configurable API delay and **Workers** |
+| **Gallery** | Launch / stop the local gallery server; configurable port; LAN mode; **HTTPS** option; auto-builds thumbnails on start (parallel) |
 
 ![GUI Download tab](screenshots/04_gui_download.png)
 
@@ -61,6 +63,7 @@ python pixai_gui.py
 | `pillow` | ❌ | Needed for `--convert`, `--convert-existing`, thumbnail generation, and metadata embedding |
 | `PySide6` | ❌ | Desktop GUI only (`pixai_gui.py`) |
 | `flask` | ❌ | Local web gallery (`pixai_gallery.py`) |
+| `cryptography` | ❌ | Only for the gallery's `--https` mode (self-signed cert for mobile PWA) |
 | `pytest` + `pytest-mock` | ❌ | Development / testing only |
 
 Install all at once:
@@ -216,8 +219,9 @@ python pixai_gallery_backup.py --organize-adv-live --convert png
 ### Local Gallery
 
 ```
-python pixai_gallery.py --out pixai_backup    # launch at http://127.0.0.1:5000
+python pixai_gallery.py --out pixai_backup            # launch at http://127.0.0.1:5000
 python pixai_gallery.py --out pixai_backup --port 5757
+python pixai_gallery.py --out pixai_backup --host 0.0.0.0 --https  # LAN + self-signed HTTPS (mobile PWA)
 ```
 
 Or use the **Gallery tab** in the GUI to launch and stop the server with one click.
@@ -254,9 +258,9 @@ The same three actions are available as buttons in the GUI **Utilities** tab.
 | `--catalog-stats` | Summarize `catalog.db` and count files on disk (no token needed) |
 | `--collect-only` | Page through and write the catalog without downloading images |
 | `--backfill-meta` | Fill missing `url`/`width`/`height` in catalog via `resolve_media` |
-| `--backfill-full-meta` | Fill full prompt/seed/model in catalog via `getTaskById`; also fills url/width/height |
+| `--backfill-full-meta` | Fill full prompt/seed/model/LoRAs in catalog via `getTaskById`; also fills url/width/height. Add `--with-loras` to re-fill older rows that predate LoRA tracking |
 | `--export-csv` | Export `catalog.db` to `catalog_export.csv` (interop / spreadsheet backup) |
-| `--sync-artworks` | Fetch published-artwork metadata (title, NSFW, likes, comments, tags) via `listArtworks` and merge onto catalog rows by `media_id` |
+| `--sync-artworks` | Fetch published-artwork metadata (title, NSFW, likes, comments, tags) via `listArtworks` and merge onto catalog rows by `media_id`. Add `--with-videos` to also download animated-artwork video files into `videos/` |
 | `--fix-model-names` | Re-resolve readable model names for rows whose `model_name` is blank or a raw numeric id (one API call per distinct model) |
 | `--audit` | Read-only duplicate report of the whole backup folder → `audit_report.csv` |
 | `--dedup` | Quarantine redundant duplicate copies to `_duplicates/` (dry-run unless `--apply`); reconciles the catalog |
@@ -271,10 +275,10 @@ The same three actions are available as buttons in the GUI **Utilities** tab.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--token TOKEN` | — | Bearer token (else `PIXAI_TOKEN` env or `token.txt`) |
+| `--token TOKEN` | — | Bearer credential override. Normally use `PIXAI_API_KEY` in `config.json` (preferred), else `PIXAI_TOKEN` env or `token.txt` |
 | `--out DIR` | `pixai_backup` | Output folder |
 | `--page-size N` | `250` | Tasks per request during download (higher = fewer round-trips; keep ≤ ~8000) |
-| `--workers N` | `4` | Parallel download workers. 1 = serial/polite; 6–8 for bulk pulls. Ignored for `--collect-only` and `--organize-adv-live` |
+| `--workers N` | `4` | Parallel workers. Applies to downloads **and** the batch jobs (`--backfill-meta`, `--backfill-full-meta`, `--fix-model-names`, `--sync-artworks --with-videos`, `--convert-existing`). 1 = serial/polite; 6–8 for bulk. Ignored for `--collect-only` and `--organize-adv-live` |
 | `--update` | off | Incremental run: stop paging once a run of pages is fully on disk (newest-first) |
 | `--update-grace N` | `2` | Consecutive all-on-disk pages before `--update` stops (raise if your history has gaps) |
 | `--accurate-count` | off | Walk the whole API to count library size for the progress bar (default uses the fast catalog estimate) |
@@ -285,7 +289,10 @@ The same three actions are available as buttons in the GUI **Utilities** tab.
 | `--no-content` | off | With `--audit`/`--dedup`, skip Class-B content hashing (faster; same-media_id dupes only) |
 | `--apply` | off | With `--dedup`, actually perform the moves/deletes (default is dry-run) |
 | `--restore-orphans` | off | With `--verify-dupes`, move any orphaned quarantined files back to `images/` |
-| `--full-meta` | off | Fetch full prompt, seed, steps, sampler, CFG, and model name per task |
+| `--with-loras` | off | With `--backfill-full-meta`, also re-fetch older rows missing LoRA data (populates the `loras` column) |
+| `--with-videos` | off | With `--sync-artworks`, download animated-artwork video files into `videos/` |
+| `--relabel-removed` | off | With `--fix-model-names`, relabel ids PixAI no longer resolves to "Unknown or removed model" |
+| `--full-meta` | off | Fetch full prompt, seed, steps, sampler, CFG, model name, and LoRAs per task |
 | `--name-length N` | `60` | Max prompt characters used in filenames |
 | `--name-sep CHAR` | `_` | Word separator in filenames (`_` or `-`) |
 | `--convert FMT` | off | Convert downloads: `png` or `jpeg` |
@@ -323,6 +330,7 @@ pixai_backup/
 │   └─ ...
 ├─ images/                       (empties out as files are moved)
 ├─ gallery/thumbs/               gallery thumbnails (auto-generated, git-ignored)
+├─ videos/                       animated-artwork videos from --sync-artworks --with-videos
 ├─ _duplicates/                  quarantine from --dedup (reversible; delete to reclaim space)
 ├─ audit_report.csv              written by --audit
 └─ catalog.db
@@ -360,6 +368,7 @@ pixai_backup/
 | `liked_count` / `comment_count` | Engagement counts at sync time (`--sync-artworks`) |
 | `aes_score` | PixAI aesthetic score (`--sync-artworks`) |
 | `art_tags` | Comma-joined tag / contest labels from the artwork's tacks (`--sync-artworks`) |
+| `loras` | LoRAs used, as `Name:weight, …` (`--full-meta` / `--backfill-full-meta --with-loras`) |
 
 ---
 
