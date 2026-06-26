@@ -52,31 +52,40 @@ def test_already_downloaded_multiple_exts_returns_first(tmp_path):
 # load_token
 # ---------------------------------------------------------------------------
 
-def test_load_token_from_cli():
+@pytest.fixture
+def isolated_creds(tmp_path, monkeypatch):
+    """Neutralize any real config.json / env so load_token's fallback chain is
+    tested in isolation. Without this, a real PIXAI_API_KEY in the developer's
+    config.json (loaded into core._cfg at import) short-circuits every fallback
+    and these tests fail on machines that have a live config."""
+    monkeypatch.setattr(core, "_cfg", {})
+    monkeypatch.setattr(core, "__file__", str(tmp_path / "pixai_gallery_backup.py"))
+    monkeypatch.chdir(tmp_path)            # no config.json / token.txt in CWD
+    monkeypatch.delenv("PIXAI_API_KEY", raising=False)
+    monkeypatch.delenv("PIXAI_TOKEN", raising=False)
+    return tmp_path
+
+
+def test_load_token_from_cli(isolated_creds):
     assert core.load_token("mytoken") == "mytoken"
 
 
-def test_load_token_from_env(monkeypatch):
+def test_load_token_from_env(isolated_creds, monkeypatch):
     monkeypatch.setenv("PIXAI_TOKEN", "envtoken")
     assert core.load_token() == "envtoken"
 
 
-def test_load_token_from_file(tmp_path, monkeypatch):
-    tok_file = tmp_path / "token.txt"
-    tok_file.write_text("filetoken\n", encoding="utf-8")
-    # Patch __file__ so the script-dir lookup hits our tmp file
-    monkeypatch.setattr(core, "__file__", str(tmp_path / "pixai_gallery_backup.py"))
+def test_load_token_from_file(isolated_creds):
+    (isolated_creds / "token.txt").write_text("filetoken\n", encoding="utf-8")
     assert core.load_token() == "filetoken"
 
 
-def test_load_token_strips_whitespace(monkeypatch):
+def test_load_token_strips_whitespace(isolated_creds, monkeypatch):
     monkeypatch.setenv("PIXAI_TOKEN", "  tok  ")
     assert core.load_token() == "tok"
 
 
-def test_load_token_raises_when_none(tmp_path, monkeypatch):
-    monkeypatch.setattr(core, "__file__", str(tmp_path / "pixai_gallery_backup.py"))
-    monkeypatch.chdir(tmp_path)  # prevent CWD fallback from finding a real token.txt
+def test_load_token_raises_when_none(isolated_creds):
     with pytest.raises(core.PixAIError, match="No credential"):
         core.load_token()
 
