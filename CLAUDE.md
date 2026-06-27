@@ -185,7 +185,7 @@ Fix: DevTools → Network → filter `graphql` → click `listUserTaskSummaries`
 
 ## Test suite
 
-146 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
+181 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
 
 ---
 

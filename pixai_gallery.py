@@ -1292,6 +1292,14 @@ document.addEventListener('DOMContentLoaded', function() {
 <div style="margin:8px 20px 0;padding:8px 12px;background:var(--mantle);border-left:3px solid var(--green);border-radius:4px;color:var(--text);font-size:13px;">
   Replaced text in {{ request.args.get('replaced') }} prompt(s).</div>
 {% endif %}
+{% if request.args.get('deleted') %}
+<div style="margin:8px 20px 0;padding:8px 12px;background:var(--mantle);border-left:3px solid var(--red);border-radius:4px;color:var(--text);font-size:13px;">
+  Deleted {{ request.args.get('deleted') }} task(s) from PixAI · {{ request.args.get('removed') }} local file(s) purged{% if request.args.get('failed') and request.args.get('failed') != '0' %} · <span style="color:var(--red);">{{ request.args.get('failed') }} failed</span>{% endif %}.</div>
+{% endif %}
+{% if request.args.get('delerr') %}
+<div style="margin:8px 20px 0;padding:8px 12px;background:var(--mantle);border-left:3px solid var(--red);border-radius:4px;color:var(--text);font-size:13px;">
+  Delete error: {{ request.args.get('delerr') }}</div>
+{% endif %}
 
 <div class="bulk-bar">
   <button class="btn" onclick="selectAll()">Select All (page)</button>
@@ -1304,7 +1312,10 @@ document.addEventListener('DOMContentLoaded', function() {
           title="Saved views"><option value="">Saved views…</option></select>
   <button class="btn" onclick="savePreset()" title="Save current filters as a named view">Save view</button>
   <button class="btn btn-danger" id="bulk-del-btn" style="display:none"
-    onclick="confirmBulkDelete()">Delete Selected</button>
+    onclick="confirmBulkDelete()" title="Remove from this local catalog only (keeps the cloud task)">Delete (local)</button>
+  <button class="btn btn-danger" id="bulk-del-cloud-btn" style="display:none"
+    onclick="confirmBulkDeleteCloud()"
+    title="Delete the whole TASK from your PixAI account AND locally (irreversible)">Delete from PixAI</button>
   <span style="margin-left:auto;color:var(--overlay0);font-size:12px;">tip: click an image to open the lightbox · arrow keys to browse · F for slideshow</span>
 </div>
 
@@ -1461,6 +1472,8 @@ function refreshSelUI() {
   document.getElementById('bulk-zip-btn').style.display = sel.size ? 'inline-block' : 'none';
   var rb = document.getElementById('bulk-replace-btn');
   if (rb) rb.style.display = sel.size ? 'inline-block' : 'none';
+  var cb = document.getElementById('bulk-del-cloud-btn');
+  if (cb) cb.style.display = sel.size ? 'inline-block' : 'none';
 }
 function onCheck() {
   var sel = selGet();
@@ -1518,6 +1531,22 @@ function confirmBulkDelete() {
     bf.submit(); return false;
   };
   document.getElementById('del-modal-form').action = '#';
+}
+function confirmBulkDeleteCloud() {
+  var ids = [...selGet()];
+  if (!ids.length) return;
+  if (!confirm('Delete ' + ids.length + ' selected image(s) from your PixAI account AND locally?\n\n'
+    + '⚠ This deletes the whole TASK for each selection (all images in a batch), '
+    + 'from the cloud AND your backup. It is IRREVERSIBLE.')) return;
+  var typed = prompt('This permanently deletes from PixAI. Type DELETE to confirm:');
+  if (typed !== 'DELETE') { alert('Cancelled.'); return; }
+  var f = document.createElement('form');
+  f.method = 'post'; f.action = '/delete-tasks-bulk';
+  function add(n, v){ var i=document.createElement('input'); i.type='hidden'; i.name=n; i.value=v; f.appendChild(i); }
+  add('back', location.href);
+  ids.forEach(function(mid){ add('media_ids', mid); });
+  localStorage.removeItem('gallery_sel');
+  document.body.appendChild(f); f.submit();
 }
 
 /* ---- Lightbox + keyboard navigation ---- */
@@ -2180,6 +2209,82 @@ function savePrompt() {
             delete_from_catalog(db_path, mid)
 
         return redirect(back)
+
+    def _purge_local(media_id, filename):
+        """Remove a media's file, thumbnail, and catalog row locally."""
+        img = find_image_file(out_dir, media_id, filename)
+        if img and img.exists():
+            try:
+                img.unlink()
+            except OSError:
+                pass
+        tp = thumb_dir / "{}.jpg".format(media_id)
+        if tp.exists():
+            try:
+                tp.unlink()
+            except OSError:
+                pass
+        delete_from_catalog(db_path, media_id)
+
+    @app.route("/delete-tasks-bulk", methods=["POST"])
+    def delete_tasks_bulk():
+        """Delete the selected images' TASKS from PixAI (irreversible) AND purge
+        them locally, so cloud and catalog never drift. Task-level: deleting any
+        image deletes its whole task (all batch images), cloud + local. Imports
+        with no task id are purged locally only."""
+        import urllib.parse
+        import pixai_gallery_backup as core   # lazy: avoid import cycle
+        back = request.form.get("back") or url_for("index")
+        sel = request.form.getlist("media_ids")
+        if not sel:
+            return redirect(back)
+
+        con = _connect(db_path)
+        try:
+            sel_rows = [con.execute(
+                "SELECT media_id, task_id, filename FROM catalog WHERE media_id=?", (m,)
+            ).fetchone() for m in sel]
+        finally:
+            con.close()
+        sel_rows = [dict(r) for r in sel_rows if r]
+        task_ids = sorted({(r.get("task_id") or "").strip()
+                           for r in sel_rows if (r.get("task_id") or "").strip()})
+        local_only = [r for r in sel_rows if not (r.get("task_id") or "").strip()]
+
+        def _err(msg):
+            sep = "&" if "?" in back else "?"
+            return redirect("{}{}delerr={}".format(back, sep, urllib.parse.quote(msg[:160])))
+
+        deleted = failed = removed = 0
+        if task_ids:
+            try:
+                session = core._make_session(None)
+            except core.PixAIError as e:
+                return _err(str(e))
+            for tid in task_ids:
+                try:
+                    core.delete_task_gql(session, tid)   # cloud delete (irreversible)
+                except Exception:                        # noqa: BLE001
+                    failed += 1
+                    continue
+                deleted += 1
+                con = _connect(db_path)
+                try:
+                    media = con.execute(
+                        "SELECT media_id, filename FROM catalog WHERE task_id=?", (tid,)
+                    ).fetchall()
+                finally:
+                    con.close()
+                for m in media:
+                    _purge_local(m[0], m[1])
+                    removed += 1
+        for r in local_only:
+            _purge_local(r["media_id"], r.get("filename"))
+            removed += 1
+
+        sep = "&" if "?" in back else "?"
+        return redirect("{}{}deleted={}&failed={}&removed={}".format(
+            back, sep, deleted, failed, removed))
 
     @app.route("/rate/<media_id>", methods=["POST"])
     def rate(media_id):
