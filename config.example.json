@@ -1,22 +1,20 @@
 {
-  "_comment": "Copy this file to config.json and replace the values with YOUR OWN. config.json is git-ignored and will never be committed.",
+  "_comment": "Copy this file to config.json and set PIXAI_API_KEY. config.json is git-ignored and will never be committed.",
 
-  "_comment_api_key": "Your official API key from platform.pixai.art (set its lifetime up to ~2 years). Sent as the Bearer credential for ALL calls, so there is NO expiring browser token to capture. This is the only credential that ever needs refreshing.",
+  "_comment_api_key": "THE ONLY VALUE YOU NEED. Your official API key from platform.pixai.art (lifetime up to ~2 years). Sent as the Bearer credential for ALL calls. Your USER_ID is auto-resolved from it, and the persisted-query hashes below ship with working defaults -- so with just this key, everything works. Nothing else here is required unless a default stops working.",
   "PIXAI_API_KEY": "YOUR_PIXAI_API_KEY",
 
-  "_comment_user_id": "Your PixAI numeric user ID. NOT in the address bar (PixAI uses @username in URLs). Capture from DevTools -> Network -> graphql -> a listUserTaskSummaries row -> Payload -> variables.userId. See README Step 2.",
-  "USER_ID": "YOUR_PIXAI_USER_ID",
+  "_comment_optional": "EVERYTHING BELOW IS OPTIONAL. Leave as-is. The hashes are public identifiers of PixAI's own frontend GraphQL ops (not secrets, not per-user); they ship baked-in and only need a value here if PixAI overhauls their frontend and a built-in default goes stale (you'll get a clear 'recapture' error if so).",
 
-  "_comment_hash": "From the same listUserTaskSummaries request: extensions.persistedQuery.sha256Hash. Only changes if PixAI overhauls their frontend.",
-  "PERSISTED_QUERY_HASH": "YOUR_PERSISTED_QUERY_HASH",
+  "_comment_user_id": "Optional override. Auto-resolved from the API key via the `me` query; only set this to pin a specific id.",
+  "USER_ID": "",
 
-  "_comment_full_meta": "Optional - only for --full-meta / --backfill-full-meta. Capture getTaskById's sha256Hash from an image detail page (see README -> Full Meta). MODEL_DETAIL_HASH has a working default; only set it if model names stop resolving.",
-  "TASK_DETAIL_HASH": "YOUR_TASK_DETAIL_HASH",
+  "_comment_hashes": "Optional overrides for the baked-in persisted-query hashes (feed / task-detail / delete). Capture from DevTools -> Network -> graphql -> the matching request -> Payload -> extensions.persistedQuery.sha256Hash, only if a default rotates.",
+  "PERSISTED_QUERY_HASH": "",
+  "TASK_DETAIL_HASH": "",
   "MODEL_DETAIL_HASH": "",
+  "DELETE_TASK_HASH": "",
 
-  "_comment_delete": "Optional - only for --delete-task (irreversible deletion). deleteGenerationTask's sha256Hash from DevTools (Network -> graphql -> a delete request -> Payload -> extensions.persistedQuery.sha256Hash). No default on purpose: deletion cannot run unless you set this yourself.",
-  "DELETE_TASK_HASH": "YOUR_DELETE_TASK_HASH",
-
-  "_comment_legacy": "Legacy fallback ONLY if you are not using PIXAI_API_KEY. U3T is the 'u3t' field on the same Payload tab; the short-lived Bearer token then goes in token.txt / PIXAI_TOKEN / --token and must be re-captured every few hours. Leave U3T blank when using an API key.",
+  "_comment_legacy": "DEPRECATED legacy fallback for users WITHOUT an API key. U3T is the 'u3t' field from a graphql request Payload; the short-lived Bearer token then goes in token.txt / PIXAI_TOKEN / --token and must be re-captured every few hours. Leave blank when using PIXAI_API_KEY (recommended).",
   "U3T": ""
 }

@@ -33,8 +33,17 @@ Similar, View Batch, **Edit Prompt**, and full metadata (incl. negative + clip-s
 ## Editing & curating
 
 - **Star ratings** (0–5) per image, set inline, stored in `catalog.db`.
+- **Collections** — select images → **+ Collection** → name it. Groups images into
+  named collections **without moving any files**, stored in the catalog, so it
+  *survives Organize* (unlike physical sub-folders). An image can be in several
+  collections; filter by them via the **Collection** dropdown. The detail page
+  lists an image's collections.
 - **Edit Prompt** — fix/annotate a single image's prompt on its detail page.
 - **Find/Replace** — bulk substring replace across selected prompts.
+- **Select mode** — toggle the **Select** button for fast multi-select: tap/click an
+  image to toggle it, or **drag across images to paint a selection** (mouse or touch).
+  No lightbox opens while it's on, so no accidental opens — ideal on a tablet. Drag on
+  the gaps to scroll, or toggle Select off to go back to normal browsing.
 - **Download ZIP** — bundle the selected full-res images (selection persists across pages).
 
 ## Deleting & keeping cloud + local in sync

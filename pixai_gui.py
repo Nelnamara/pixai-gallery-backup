@@ -357,10 +357,11 @@ class SettingsBar(QGroupBox):
 
         lbl_tok = QLabel("Token:")
         lbl_tok.setFixedWidth(60)
+        lbl_tok.setToolTip("Legacy. Leave blank when PIXAI_API_KEY is set in config.json.")
         self.token_edit = QLineEdit()
         self.token_edit.setEchoMode(QLineEdit.Password)
         self.token_edit.setPlaceholderText(
-            "Bearer JWT  (or set PIXAI_TOKEN env var / create token.txt)")
+            "Leave blank — uses PIXAI_API_KEY from config.json (legacy browser-token fallback)")
         self.token_edit.setText(settings.get("token", ""))
 
         eye = QPushButton("👁")
@@ -562,7 +563,7 @@ class DownloadTab(QWidget):
 
         # Full meta row
         r5 = QHBoxLayout()
-        self.full_meta = QCheckBox("Fetch full prompt / seed / model  (--full-meta, requires TASK_DETAIL_HASH in config.json)")
+        self.full_meta = QCheckBox("Fetch full prompt / seed / model  (--full-meta)")
         self.full_meta.setChecked(settings.get("full_meta", False))
         r5.addWidget(self.full_meta)
         r5.addStretch()

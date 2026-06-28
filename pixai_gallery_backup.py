@@ -36,7 +36,7 @@ QUICK START
   python pixai_gallery_backup.py --variant original   # force a variant if you know it
 """
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import argparse
 import csv
@@ -145,10 +145,18 @@ def _load_config():
 
 
 _cfg = _load_config()
-PERSISTED_QUERY_HASH = _cfg.get("PERSISTED_QUERY_HASH", "")
+# Persisted-query hashes are PUBLIC, non-secret identifiers of PixAI's own frontend
+# GraphQL operations (the same for every user, embedded in their JS bundle). The
+# history feed / task detail / delete operations are NOT exposed on the public API
+# the API key talks to, so these hashes are the only way to reach them. They change
+# only when PixAI overhauls their frontend -- captured 2026-06-28. Override any in
+# config.json if one rotates (you'll get a clear "recapture" error if it does).
+PERSISTED_QUERY_HASH = _cfg.get("PERSISTED_QUERY_HASH", "") or \
+    "d30424c72dc7d75d14c09d9fe447e1ac3dea8e767668092e2113efb8c817573e"
 U3T = _cfg.get("U3T", "")
-USER_ID = _cfg.get("USER_ID", "")
-TASK_DETAIL_HASH = _cfg.get("TASK_DETAIL_HASH", "")
+USER_ID = _cfg.get("USER_ID", "")  # auto-resolved from the API key (me{id}) if blank
+TASK_DETAIL_HASH = _cfg.get("TASK_DETAIL_HASH", "") or \
+    "2526f64c73c59fcfeff938b0f4a8b3b610f2294bc6eb6b6b281aa671ac81a08e"
 # Default to the captured getGenerationModelByVersionId hash so model-name
 # resolution works out of the box (override in config.json if it rotates).
 MODEL_DETAIL_HASH = _cfg.get("MODEL_DETAIL_HASH", "") or \
@@ -161,10 +169,12 @@ ARTWORK_LIST_HASH = _cfg.get("ARTWORK_LIST_HASH", "") or \
 ARTWORK_DETAIL_HASH = _cfg.get("ARTWORK_DETAIL_HASH", "") or \
     "ac39a87c58451559f9dcbf2c04862c1ee3260f9645ed60fdfb574e41689a6766"
 CLIENT_LIBRARY_ARTWORK = {"name": "@apollo/client", "version": "4.1.4"}
-# Deletion mutation (deleteGenerationTask). Loaded ONLY from config.json with no
-# built-in default: capturing this hash is a deliberate manual step, so the
-# destructive --delete-task path cannot fire unless you've set it up yourself.
-DELETE_TASK_HASH = _cfg.get("DELETE_TASK_HASH", "")
+# Deletion mutation (deleteGenerationTask). Also a public persisted hash. It only
+# ever touches YOUR OWN tasks, and the destructive paths are independently gated by
+# explicit confirmation (typed "DELETE" in the gallery, --confirm on the CLI), so the
+# default is safe; override in config.json if it rotates.
+DELETE_TASK_HASH = _cfg.get("DELETE_TASK_HASH", "") or \
+    "9f0c8dd3edfe712a4479d700df0b33faebbbc28c7d2310589ea192e1a35d6ee4"
 DELETE_OPERATION = "deleteGenerationTask"
 # ===========================================================================
 
@@ -796,6 +806,17 @@ def gql_adhoc(session, query, variables=None, retries=3):
             raise PixAIError("GraphQL error: " + json.dumps(data["errors"])[:500])
         return data.get("data") or {}
     raise RuntimeError("unreachable")
+
+
+def resolve_user_id(session):
+    """Resolve the authenticated account's user id from the API key, via the public
+    `me` query (the one account-scoped query the ad-hoc API surface exposes). Lets
+    setup work with just PIXAI_API_KEY -- no manual USER_ID needed."""
+    data = gql_adhoc(session, "query{ me{ id } }")
+    uid = ((data or {}).get("me") or {}).get("id", "")
+    if not uid:
+        raise PixAIError("the `me` query returned no id")
+    return str(uid)
 
 
 def media_file_gql(session, media_id):
@@ -1679,16 +1700,15 @@ def _make_session(token_val):
         TASK_DETAIL_HASH = fresh.get("TASK_DETAIL_HASH", "") or TASK_DETAIL_HASH
         MODEL_DETAIL_HASH = fresh.get("MODEL_DETAIL_HASH", "") or MODEL_DETAIL_HASH
         DELETE_TASK_HASH = fresh.get("DELETE_TASK_HASH", "") or DELETE_TASK_HASH
-    # With an API key (sent as Bearer) the per-session u3t is not required; the
-    # browser-JWT path still wants it. Always need the persisted hash + USER_ID.
     have_api_key = bool((fresh or {}).get("PIXAI_API_KEY") or _cfg.get("PIXAI_API_KEY"))
-    required = [PERSISTED_QUERY_HASH, USER_ID] if have_api_key else [PERSISTED_QUERY_HASH, U3T, USER_ID]
-    if not all(required):
+    # Persisted hashes now ship with defaults, so the API-key path needs nothing but
+    # the key (USER_ID is auto-resolved below). The legacy browser-JWT path still
+    # wants a U3T alongside its short-lived token.
+    if not have_api_key and not U3T:
         raise PixAIError(
-            "config.json is missing or incomplete (need PERSISTED_QUERY_HASH, USER_ID"
-            "{}).\nCopy config.example.json to config.json and fill in your values.\n"
-            "See the README -> Configuration for instructions.".format(
-                "" if have_api_key else ", U3T"))
+            "No API key found. Add PIXAI_API_KEY to config.json (recommended -- then "
+            "nothing else is required), or use the legacy token path (U3T + token.txt).\n"
+            "Copy config.example.json to config.json. See docs/setup.md.")
     token = load_token(token_val)
     session = requests.Session()
     session.headers.update({
@@ -1698,6 +1718,20 @@ def _make_session(token_val):
         "apollo-require-preflight": "true",
         "x-apollo-operation-name": OPERATION_NAME,
     })
+    # Auto-resolve the user id from the API key when it isn't pinned in config.
+    if not USER_ID:
+        if have_api_key:
+            try:
+                USER_ID = resolve_user_id(session)
+                vlog("resolved USER_ID from API key: {}".format(USER_ID))
+            except Exception as e:
+                raise PixAIError(
+                    "Could not auto-resolve your user id from the API key "
+                    "(me query failed: {}).\nAdd USER_ID to config.json as a fallback."
+                    .format(e))
+        else:
+            raise PixAIError("config.json needs USER_ID (or set PIXAI_API_KEY to "
+                             "auto-resolve it).")
     return session
 
 

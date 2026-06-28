@@ -20,44 +20,42 @@ pip install requests pillow PySide6 flask truststore
 
 ## 2. Configure
 
-Copy `config.example.json` to `config.json` (git-ignored) and fill **three** values:
+Copy `config.example.json` to `config.json` (git-ignored) and set **one** value:
 
 ```json
-"PIXAI_API_KEY": "your-api-key",
-"USER_ID": "your-numeric-id",
-"PERSISTED_QUERY_HASH": "captured-hash"
+"PIXAI_API_KEY": "your-api-key"
 ```
 
-### API key (one minute, lasts up to ~2 years)
-Generate one at [platform.pixai.art](https://platform.pixai.art) and paste it as
-`PIXAI_API_KEY`. It's the Bearer credential for **every** call — there's no
-expiring browser token to recapture. This is the only credential that ever needs
-refreshing.
+That's it. Generate a key at [platform.pixai.art](https://platform.pixai.art)
+(lifetime up to ~2 years) and paste it. It's the Bearer credential for **every**
+call, and:
 
-### USER_ID + PERSISTED_QUERY_HASH (one-time capture)
-PixAI has no public endpoint for listing *your own* history, so the listing
-replays the same persisted GraphQL query the website uses. Capture two values once:
+- **`USER_ID` is auto-resolved** from the key (via the `me` query) — no DevTools.
+- **The persisted-query hashes ship with working defaults**, so there's nothing to
+  capture from the browser.
 
-1. Log in to [pixai.art](https://pixai.art), open your gallery/profile.
-2. **F12 → Network**, type `graphql` in the filter.
-3. Scroll so requests fire, click a `listUserTaskSummaries` row → **Payload**.
-4. Copy `variables.userId` → `USER_ID`, and
-   `extensions.persistedQuery.sha256Hash` → `PERSISTED_QUERY_HASH`.
+### Why are there still "hashes" in the example file?
+PixAI's public API (what your key talks to) exposes generation and model search,
+but **not** the private operations that list *your own* history, fetch task detail,
+or delete tasks. Those are reached by replaying PixAI's own frontend GraphQL
+queries, identified by a persisted-query **hash**. These hashes are **public, not
+secret, and the same for everyone** — so the tool bakes the current ones in. You
+only ever touch them if PixAI overhauls their frontend and a default goes stale
+(you'll get a clear `PersistedQueryNotFound` / "Cannot query field" error telling
+you to recapture that one — see below). All the `config.json` hash fields are
+optional overrides; leave them blank.
 
-(Your numeric `USER_ID` isn't in the address bar — PixAI uses `@username` in URLs —
-which is why this step exists.)
+### Recapturing a hash (only if a default ever breaks)
+1. Log in to [pixai.art](https://pixai.art), **F12 → Network**, filter `graphql`.
+2. Click the relevant request (`listUserTaskSummaries` for the feed, `getTaskById`
+   for full-meta, `deleteGenerationTask` for delete) → **Payload**.
+3. Copy `extensions.persistedQuery.sha256Hash` into the matching `config.json` key
+   (`PERSISTED_QUERY_HASH` / `TASK_DETAIL_HASH` / `DELETE_TASK_HASH`).
 
-### Optional hashes (captured the same way)
-| Key | For |
-|---|---|
-| `TASK_DETAIL_HASH` | `--full-meta`, `--backfill-full-meta`, recovering generations by id (`getTaskById`) |
-| `MODEL_DETAIL_HASH` | model-name resolution (ships a working default; only set if names stop resolving) |
-| `DELETE_TASK_HASH` | **required** for delete (`--delete-task`, gallery "Delete from PixAI") — no default, on purpose |
-
-> No API key? You can run the legacy browser-token path instead (leave
-> `PIXAI_API_KEY` blank, add `U3T`, supply the short-lived token via `token.txt` /
-> `PIXAI_TOKEN` / `--token`). It expires every few hours — the API key exists to
-> avoid that.
+> No API key? A legacy browser-token path still exists (leave `PIXAI_API_KEY`
+> blank, add `U3T`, supply the short-lived token via `token.txt` / `PIXAI_TOKEN` /
+> `--token`, and set `USER_ID`). It expires every few hours — the API key exists to
+> avoid all of this.
 
 ## 3. First run
 

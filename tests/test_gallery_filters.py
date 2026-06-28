@@ -216,6 +216,37 @@ def test_source_filter(tmp_path):
     assert query_catalog(db, source="")[1] == 4         # all
 
 
+def test_collections_add_remove_filter(tmp_path):
+    from pixai_gallery import (add_to_collection, remove_from_collection,
+                               unique_collections)
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_row(media_id=m, filename=m + ".png") for m in ("a", "b", "c")])
+    assert add_to_collection(db, ["a", "b"], "Elf Portraits") == 2
+    assert add_to_collection(db, ["a"], "Elf Portraits") == 0      # already in -> no-op
+    assert add_to_collection(db, ["a"], "Favorites") == 1          # multiple per image
+    assert unique_collections(db) == ["Elf Portraits", "Favorites"]
+    assert query_catalog(db, collection="Elf Portraits")[1] == 2
+    assert query_catalog(db, collection="Favorites")[1] == 1
+    # exact-token match: "Elf" must NOT match "Elf Portraits"
+    assert query_catalog(db, collection="Elf")[1] == 0
+    assert remove_from_collection(db, ["a"], "Elf Portraits") == 1
+    assert query_catalog(db, collection="Elf Portraits")[1] == 1
+
+
+def test_collection_add_route(tmp_path):
+    from pixai_gallery import create_app, load_catalog
+    db = tmp_path / "catalog.db"
+    save_catalog(db, [_row(media_id="m1", filename="a.png"), _row(media_id="m2", filename="b.png")])
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "a.png").write_bytes(b"x")
+    (tmp_path / "images" / "b.png").write_bytes(b"x")
+    client = create_app(tmp_path).test_client()
+    r = client.post("/collection-add", data={"media_ids": ["m1", "m2"], "name": "Moonlit", "back": "/"})
+    assert r.status_code == 302 and "collected=2" in r.headers["Location"]
+    by = {x["media_id"]: x for x in load_catalog(db)}
+    assert by["m1"]["collections"] == "Moonlit"
+
+
 def test_deleted_remote_filter(tmp_path):
     db = tmp_path / "catalog.db"
     save_catalog(db, [
