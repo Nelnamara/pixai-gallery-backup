@@ -1859,6 +1859,10 @@ document.addEventListener('DOMContentLoaded', function() {
     } else if (e.key === 'ArrowRight' || e.keyCode === 39) {
       var el = document.getElementById('nav-next');
       if (el) window.location.href = el.href;
+    } else if (e.key === 'Escape' || e.keyCode === 27 || e.key === 'ArrowUp' || e.keyCode === 38) {
+      e.preventDefault();
+      var g = document.getElementById('nav-gallery');
+      if (g) window.location.href = g.href;
     } else if (e.key === 'f' || e.key === 'F') {
       toggleFocus();
     }
@@ -1872,7 +1876,7 @@ document.addEventListener('DOMContentLoaded', function() {
     {% else %}
     <span class="nav-arrow nav-disabled">&#8592; Prev</span>
     {% endif %}
-    <a class="back-link" href="{{ back }}">↑ Gallery</a>
+    <a id="nav-gallery" class="back-link" href="{{ back }}" title="Back to gallery (Esc or ↑ arrow)">↑ Gallery</a>
     <button id="focus-btn" class="focus-btn" onclick="toggleFocus()" title="Toggle focus mode (F key)">Focus</button>
     {% if next_id %}
     <a id="nav-next" class="nav-arrow" href="{{ url_for('detail', media_id=next_id, back=back) }}" title="Next (→ arrow key)">Next &#8594;</a>
