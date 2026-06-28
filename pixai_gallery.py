@@ -1047,6 +1047,11 @@ def create_app(out_dir: Path):
 
   /* Bulk toolbar */
   .bulk-bar { background: var(--surface0); padding: 8px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--surface1); min-height: 40px; flex-wrap: wrap; }
+  /* Select mode: cards capture the drag (no scroll-hijack mid-card) and never open the lightbox. */
+  .select-mode .grid .card { touch-action: none; cursor: copy; }
+  .select-mode .grid .card .cover { cursor: copy; }
+  #select-mode-btn.active { background: var(--accent); color: #1e1e2e; font-weight: 600; }
+  body.select-mode .bulk-bar::after { content: "Select mode: tap to toggle · drag across images to paint"; color: var(--accent); font-size: 12px; flex-basis: 100%; }
   .bulk-bar span { color: var(--subtext); font-size: 13px; }
   #sel-count { color: var(--gold); font-weight: 600; }
 
@@ -1403,6 +1408,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="bulk-bar">
   <button class="btn" onclick="selectAll()">Select All (page)</button>
   <button class="btn" onclick="clearAll()">Clear</button>
+  <button class="btn" id="select-mode-btn" onclick="toggleSelectMode()" title="Select mode: tap an image to toggle it, or drag across images to paint a selection. No lightbox opens, so no accidental opens. Great for touch/tablet.">Select</button>
   <span><span id="sel-count">0</span> selected</span>
   <button class="btn" id="bulk-zip-btn" style="display:none" onclick="downloadZip()">Download ZIP</button>
   <button class="btn" id="bulk-replace-btn" style="display:none" onclick="bulkReplacePrompt()" title="Find/replace text in the prompts of selected images">Find/Replace</button>
@@ -1588,6 +1594,61 @@ function selectAll() {
   selSave(sel); refreshSelUI();
 }
 function clearAll() { selSave(new Set()); refreshSelUI(); }
+/* ---- Select mode + drag-paint multi-select (mouse + touch via Pointer Events) ---- */
+var selectMode = localStorage.getItem('gallery_selmode') === '1';
+function applySelectMode() {
+  document.body.classList.toggle('select-mode', selectMode);
+  var b = document.getElementById('select-mode-btn');
+  if (b) { b.classList.toggle('active', selectMode); b.textContent = selectMode ? 'Select: ON' : 'Select'; }
+}
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  localStorage.setItem('gallery_selmode', selectMode ? '1' : '');
+  applySelectMode();
+}
+(function() {
+  var painting = false, paintVal = true, paintSet = null, lastCard = null;
+  function cardAt(x, y) { var el = document.elementFromPoint(x, y); return el ? el.closest('.card') : null; }
+  function paint(card) {
+    if (!card || card === lastCard || !paintSet) return;
+    lastCard = card;
+    var mid = card.dataset.mid;
+    if (paintVal) paintSet.add(mid); else paintSet.delete(mid);
+    card.classList.toggle('selected', paintVal);
+    var cb = card.querySelector('input[name=media_ids]'); if (cb) cb.checked = paintVal;
+    var c = document.getElementById('sel-count'); if (c) c.textContent = paintSet.size;
+  }
+  document.addEventListener('pointerdown', function(e) {
+    if (!selectMode || !e.target.closest) return;
+    var card = e.target.closest('.card');
+    if (!card || e.target.closest('.cb-wrap')) return;   // empty space scrolls; checkbox handles itself
+    painting = true; lastCard = null;
+    paintSet = selGet();
+    paintVal = !paintSet.has(card.dataset.mid);           // first card sets paint direction
+    paint(card);
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', function(e) {
+    if (!painting) return;
+    paint(cardAt(e.clientX, e.clientY));
+    e.preventDefault();
+  });
+  function endPaint() {
+    if (!painting) return;
+    painting = false;
+    if (paintSet) { selSave(paintSet); refreshSelUI(); }
+    paintSet = null; lastCard = null;
+  }
+  document.addEventListener('pointerup', endPaint);
+  document.addEventListener('pointercancel', endPaint);
+  // Swallow the click so the lightbox / detail link never fires in select mode (images and videos).
+  document.addEventListener('click', function(e) {
+    if (!selectMode || !e.target.closest) return;
+    var card = e.target.closest('.card');
+    if (!card || e.target.closest('.cb-wrap')) return;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+})();
 function downloadZip() {
   var sel = [...selGet()];
   if (!sel.length) return;
@@ -1750,7 +1811,7 @@ window.addEventListener('pagehide', saveScrollPos);
 // so this is what actually re-checks the boxes after a browser Back.
 window.addEventListener('pageshow', function(){ refreshSelUI(); restoreScrollPos(); });
 document.addEventListener('DOMContentLoaded', function(){
-  refreshSelUI(); applyBlur(); refreshPresets(); restoreScrollPos();
+  refreshSelUI(); applyBlur(); refreshPresets(); restoreScrollPos(); applySelectMode();
   // Lightbox touch: swipe left/right to navigate, double-tap to zoom 2x.
   var im = document.getElementById('lb-img');
   if (im) {
