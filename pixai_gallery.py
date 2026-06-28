@@ -1730,8 +1730,27 @@ document.addEventListener('keydown', function(e) {
   else if (e.key === 'ArrowUp') { e.preventDefault(); kbdFocus(kbdIdx - cols); }
   else if (e.key === 'Enter' && kbdIdx >= 0) { openLightbox(null, kbdIdx); }
 });
+/* ---- Preserve scroll + re-sync selection across back / detail navigation ---- */
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+function _scrollKey(){ return 'scroll:' + location.pathname + location.search; }
+function saveScrollPos(){ try { sessionStorage.setItem(_scrollKey(), String(window.scrollY)); } catch(e){} }
+function restoreScrollPos(){
+  try {
+    var y = sessionStorage.getItem(_scrollKey());
+    if (y === null) return;
+    var n = parseInt(y, 10) || 0;
+    window.scrollTo(0, n);
+    // thumbnails can shift layout as they load; re-apply once everything's in
+    window.addEventListener('load', function(){ window.scrollTo(0, n); }, {once:true});
+  } catch(e){}
+}
+window.addEventListener('beforeunload', saveScrollPos);
+window.addEventListener('pagehide', saveScrollPos);
+// pageshow fires on back/forward-cache restores (DOMContentLoaded does not),
+// so this is what actually re-checks the boxes after a browser Back.
+window.addEventListener('pageshow', function(){ refreshSelUI(); restoreScrollPos(); });
 document.addEventListener('DOMContentLoaded', function(){
-  refreshSelUI(); applyBlur(); refreshPresets();
+  refreshSelUI(); applyBlur(); refreshPresets(); restoreScrollPos();
   // Lightbox touch: swipe left/right to navigate, double-tap to zoom 2x.
   var im = document.getElementById('lb-img');
   if (im) {
