@@ -1488,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="pagination">
   {% if page > 1 %}
   <a href="{{ page_url(1) }}">« First</a>
-  <a href="{{ page_url(page - 1) }}">‹ Prev</a>
+  <a id="pg-prev" href="{{ page_url(page - 1) }}">‹ Prev</a>
   {% endif %}
   {% for p in page_range %}
     {% if p == '…' %}
@@ -1500,7 +1500,7 @@ document.addEventListener('DOMContentLoaded', function() {
     {% endif %}
   {% endfor %}
   {% if page < total_pages %}
-  <a href="{{ page_url(page + 1) }}">Next ›</a>
+  <a id="pg-next" href="{{ page_url(page + 1) }}">Next ›</a>
   <a href="{{ page_url(total_pages) }}">Last »</a>
   {% endif %}
 </div>
@@ -1754,10 +1754,22 @@ function lbShow() {
     (lbIdx + 1) + ' / ' + lbCards.length + '   ' + (card.dataset.prompt || '');
   document.getElementById('lb-details').href = '/image/' + mid + '?back=' + encodeURIComponent(location.href);
 }
+function lbNavUrl(href, where) {
+  return href + (href.indexOf('?') >= 0 ? '&' : '?') + 'lbopen=' + where;
+}
 function lbStep(d) {
   if (!lbCards.length) return;
-  lbIdx = (lbIdx + d + lbCards.length) % lbCards.length;
-  lbShow();
+  var ni = lbIdx + d;
+  if (ni >= lbCards.length) {           // past the last card -> next page (open at its first)
+    var nx = document.getElementById('pg-next');
+    if (nx) { saveScrollPos(); location.href = lbNavUrl(nx.href, 'first'); return; }
+    ni = 0;                              // last page: wrap within the page
+  } else if (ni < 0) {                   // before the first card -> previous page (open at its last)
+    var pv = document.getElementById('pg-prev');
+    if (pv) { saveScrollPos(); location.href = lbNavUrl(pv.href, 'last'); return; }
+    ni = lbCards.length - 1;             // first page: wrap within the page
+  }
+  lbIdx = ni; lbShow();
 }
 function closeLightbox() {
   document.getElementById('lightbox').classList.remove('open');
@@ -1824,6 +1836,16 @@ window.addEventListener('pagehide', saveScrollPos);
 window.addEventListener('pageshow', function(){ refreshSelUI(); restoreScrollPos(); });
 document.addEventListener('DOMContentLoaded', function(){
   refreshSelUI(); applyBlur(); refreshPresets(); restoreScrollPos(); applySelectMode();
+  // Cross-page lightbox: arriving with ?lbopen=first|last auto-opens the overlay so
+  // arrow-key browsing rolls over page boundaries seamlessly.
+  (function() {
+    var m = location.search.match(/[?&]lbopen=(first|last)/);
+    if (!m) return;
+    var cards = document.querySelectorAll('.card');
+    if (!cards.length) return;
+    try { var u = new URL(location.href); u.searchParams.delete('lbopen'); history.replaceState(null, '', u); } catch(e) {}
+    openLightbox(null, m[1] === 'last' ? cards.length - 1 : 0);
+  })();
   // Lightbox touch: swipe left/right to navigate, double-tap to zoom 2x.
   var im = document.getElementById('lb-img');
   if (im) {

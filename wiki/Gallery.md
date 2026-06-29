@@ -33,8 +33,9 @@ images and videos with the arrow keys without leaving the overlay.
 ## The lightbox & detail page
 
 - **Click an image** → the lightbox overlay: swipe / `←` `→` to browse, `F`/Space
-  slideshow, `Esc` or ✕ to close. Nothing navigates away — your scroll and selections
-  stay put.
+  slideshow, `Esc` or ✕ to close. Arrow keys **roll over page boundaries** — reach the
+  end of a page and it loads the next one, continuing seamlessly. Closing leaves your
+  scroll and selections intact.
 - **Detail page** (via the lightbox's *Details*, or by clicking a video): full
   metadata (incl. negative + clip-skip), Copy Prompt, Find Similar, View Batch, Edit
   Prompt. Keys: `←` `→` prev-next, **`Esc` / `↑` back to gallery**, `F` focus mode.
