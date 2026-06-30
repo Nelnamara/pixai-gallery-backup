@@ -9,3 +9,4 @@ flask
 # dev / testing
 pytest
 pytest-mock
+pytest-cov   # coverage: python -m pytest --cov=pixai_gallery --cov=pixai_gallery_backup

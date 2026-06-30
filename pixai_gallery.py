@@ -846,7 +846,7 @@ def find_files_for_media_id(out_dir, media_id, include_gallery=False):
     """
     mid = str(media_id)
     gallery_dir = out_dir / "gallery"
-    quarantine_dir = out_dir / "_duplicates"
+    quarantine_dirs = (out_dir / "_duplicates", out_dir / DELETED_DIRNAME)
     matches = []
     for p in out_dir.rglob("*{}.*".format(mid)):
         if p.suffix.lower() not in _IMAGE_EXTS:
@@ -857,7 +857,7 @@ def find_files_for_media_id(out_dir, media_id, include_gallery=False):
             continue
         if not include_gallery and _is_under(p, gallery_dir):
             continue
-        if _is_under(p, quarantine_dir):
+        if any(_is_under(p, q) for q in quarantine_dirs):
             continue
         try:
             if not p.is_file() or p.stat().st_size == 0:
@@ -874,12 +874,53 @@ def find_image_file(out_dir, media_id, filename):
     Excludes out_dir/gallery/ so thumbnails are never returned as full-res images.
     """
     gallery_dir = out_dir / "gallery"
+    deleted_dir = out_dir / DELETED_DIRNAME
     if filename:
         for candidate in out_dir.rglob(filename):
-            if candidate.is_file() and not _is_under(candidate, gallery_dir):
+            if (candidate.is_file() and not _is_under(candidate, gallery_dir)
+                    and not _is_under(candidate, deleted_dir)):
                 return candidate
     matches = find_files_for_media_id(out_dir, media_id)
     return matches[0] if matches else None
+
+
+# Accidental bulk deletes should be recoverable: purges MOVE files here instead of
+# destroying them (the catalog row is still removed, so the gallery stays clean).
+DELETED_DIRNAME = "_deleted"
+
+
+def purge_media_local(out_dir, thumb_dir, db_path, media_id, filename, quarantine=True):
+    """Remove a media's catalog row + (regenerable) thumbnail, and either move its
+    file to out_dir/_deleted/ (default, recoverable) or hard-delete it. Returns the
+    new quarantine location (Path) when moved, else None."""
+    out_dir = Path(out_dir)
+    img = find_image_file(out_dir, media_id, filename)
+    moved = None
+    if img and img.exists():
+        if quarantine:
+            qdir = out_dir / DELETED_DIRNAME
+            qdir.mkdir(parents=True, exist_ok=True)
+            dest = qdir / img.name
+            if dest.exists():                       # don't clobber an earlier delete
+                dest = qdir / "{}_{}{}".format(img.stem, media_id, img.suffix)
+            try:
+                img.replace(dest)                   # atomic move on the same volume
+                moved = dest
+            except OSError:
+                pass
+        else:
+            try:
+                img.unlink()
+            except OSError:
+                pass
+    tp = Path(thumb_dir) / "{}.jpg".format(media_id)
+    if tp.exists():
+        try:
+            tp.unlink()
+        except OSError:
+            pass
+    delete_from_catalog(db_path, media_id)
+    return moved
 
 
 def make_thumbnail(img_path, thumb_path):
@@ -1689,7 +1730,7 @@ function bulkAddCollection() {
 function confirmBulkDelete() {
   var ids = [...selGet()];
   if (!ids.length) return;
-  confirmDelete('/delete-bulk', 'Permanently delete ' + ids.length + ' image' + (ids.length !== 1 ? 's' : '') + '? This cannot be undone.');
+  confirmDelete('/delete-bulk', 'Remove ' + ids.length + ' image' + (ids.length !== 1 ? 's' : '') + ' from the local catalog? Files move to the _deleted/ folder (recoverable); the cloud task is untouched.');
   document.getElementById('del-modal-form').onsubmit = function() {
     var bf = document.getElementById('bulk-form');
     // ensure all cross-page selections are submitted, not just this page's
@@ -2426,13 +2467,7 @@ function savePrompt() {
         back = request.args.get("back") or url_for("index")
         row = get_row(db_path, media_id)
         if row:
-            img_path = find_image_file(out_dir, media_id, row.get("filename"))
-            if img_path and img_path.exists():
-                img_path.unlink()
-            thumb_path = thumb_dir / "{}.jpg".format(media_id)
-            if thumb_path.exists():
-                thumb_path.unlink()
-            delete_from_catalog(db_path, media_id)
+            purge_media_local(out_dir, thumb_dir, db_path, media_id, row.get("filename"))
         return redirect(back)
 
     @app.route("/delete-bulk", methods=["POST"])
@@ -2446,31 +2481,14 @@ function savePrompt() {
         to_delete = {mid: r for mid, r in to_delete.items() if r}
 
         for mid, row in to_delete.items():
-            img_path = find_image_file(out_dir, mid, row.get("filename"))
-            if img_path and img_path.exists():
-                img_path.unlink()
-            thumb_path = thumb_dir / "{}.jpg".format(mid)
-            if thumb_path.exists():
-                thumb_path.unlink()
-            delete_from_catalog(db_path, mid)
+            purge_media_local(out_dir, thumb_dir, db_path, mid, row.get("filename"))
 
         return redirect(back)
 
     def _purge_local(media_id, filename):
-        """Remove a media's file, thumbnail, and catalog row locally."""
-        img = find_image_file(out_dir, media_id, filename)
-        if img and img.exists():
-            try:
-                img.unlink()
-            except OSError:
-                pass
-        tp = thumb_dir / "{}.jpg".format(media_id)
-        if tp.exists():
-            try:
-                tp.unlink()
-            except OSError:
-                pass
-        delete_from_catalog(db_path, media_id)
+        """Remove a media's catalog row + thumbnail; quarantine its file to _deleted/
+        (recoverable) rather than destroying it."""
+        purge_media_local(out_dir, thumb_dir, db_path, media_id, filename)
 
     @app.route("/delete-tasks-bulk", methods=["POST"])
     def delete_tasks_bulk():
