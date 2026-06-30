@@ -1046,7 +1046,7 @@ def create_app(out_dir: Path):
   .chips .clear-all:hover { text-decoration: underline; }
 
   /* Bulk toolbar */
-  .bulk-bar { background: var(--surface0); padding: 8px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--surface1); min-height: 40px; flex-wrap: wrap; }
+  .bulk-bar { background: var(--surface0); padding: 8px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--surface1); min-height: 40px; flex-wrap: wrap; position: sticky; top: var(--bulk-top, 52px); z-index: 99; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
   /* Select mode: cards capture the drag (no scroll-hijack mid-card) and never open the lightbox. */
   .select-mode .grid .card { touch-action: none; cursor: copy; }
   .select-mode .grid .card .cover { cursor: copy; }
@@ -1836,6 +1836,12 @@ window.addEventListener('pagehide', saveScrollPos);
 window.addEventListener('pageshow', function(){ refreshSelUI(); restoreScrollPos(); });
 document.addEventListener('DOMContentLoaded', function(){
   refreshSelUI(); applyBlur(); refreshPresets(); restoreScrollPos(); applySelectMode();
+  // Keep the bulk action bar stuck just below the sticky header (header height varies).
+  (function() {
+    var h = document.querySelector('header');
+    function setTop() { if (h) document.documentElement.style.setProperty('--bulk-top', h.offsetHeight + 'px'); }
+    setTop(); window.addEventListener('resize', setTop);
+  })();
   // Cross-page lightbox: arriving with ?lbopen=first|last auto-opens the overlay so
   // arrow-key browsing rolls over page boundaries seamlessly.
   (function() {
