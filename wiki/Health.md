@@ -28,6 +28,4 @@ python pixai_gallery.py --out pixai_backup --rebuild-thumbs
 
 ---
 
-*Coming soon (roadmap 1.7): expanded metrics — generation activity over time,
-model/LoRA trends, rating & aesthetic histograms, storage-by-month, video/NSFW
-ratios, orphan counts.*
+*More metrics are planned for a future release.*

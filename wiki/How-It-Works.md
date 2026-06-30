@@ -13,35 +13,16 @@ catalog logic lives in exactly one place.
 
 ## How it talks to PixAI — and why setup is just one key
 
-Your API key authenticates against PixAI's **public** GraphQL surface. Probed live,
-that surface exposes:
+PixAI has no official public API for managing your own work, so some operations
+(listing your history, task detail, delete) reuse PixAI's own frontend GraphQL
+queries, each identified by a `sha256Hash`. The practical upshot:
 
-- ✅ `me` (→ your `USER_ID` is auto-resolved), `generationModels` (model search),
-  `createGenerationTask` (generation).
-- ❌ **Not** your history feed, task detail, or delete — those return *"Cannot query
-  field on type Query."*
-
-So the private operations (`listUserTaskSummaries`, `getTaskById`,
-`deleteGenerationTask`) are reached by **replaying PixAI's own frontend persisted
-queries**, each identified by a `sha256Hash`. The endpoint validates *ad-hoc*
-queries against the limited public schema but executes *persisted* (hash-registered)
-queries against the full internal schema — a deliberate gateway design.
-
-What this means in practice:
-
-- **The hashes are not credentials.** They're public, per-frontend identifiers (the
-  same for every user, embedded in PixAI's JS bundle). The tool **bakes in** the
-  current ones, so you don't capture anything.
-- **The legacy browser token is dead.** The persisted feed runs on just your API key
-  + the hash; `U3T`/`token.txt` are only a fallback for users without an API key.
-- Two mechanisms in the code:
-  - `gql_adhoc()` — POSTs a full query document; used for `me`, model search,
-    generation (public schema).
-  - the persisted-query path — GET with `operationName` + `sha256Hash`; used for the
-    feed, task detail, delete (private schema).
-
-See [`API_OPERATIONS.md`](https://github.com/Nelnamara/moonglade-athenaeum/blob/master/API_OPERATIONS.md)
-for the operation catalog.
+- **Your API key is the only credential.** Your `USER_ID` is auto-resolved from it,
+  and the persisted-query hashes ship with working defaults — so setup is just the key.
+- **The hashes are not secrets.** They identify PixAI's own frontend operations and
+  rarely change. If a PixAI frontend update ever breaks one, you'll get a clear error
+  and can update that one value — see [Troubleshooting](Troubleshooting).
+- **The legacy browser token is retired** — only a fallback for users without an API key.
 
 ## Media URLs
 Task summaries carry `mediaId` / `batchMediaIds`, not URLs. Full-res comes from

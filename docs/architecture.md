@@ -25,8 +25,7 @@ reverse-engineers the website's traffic:
 3. **Everything else** — `gql_adhoc()` POSTs full GraphQL query documents directly.
    PixAI accepts these under the API-key Bearer, so most operations (generate,
    delete, account, model search) need **no persisted-hash capture**. This is the
-   foundation that turned a backup tool into a full client. See
-   [`API_OPERATIONS.md`](../API_OPERATIONS.md) for the operation catalog.
+   foundation that turned a backup tool into a full client.
 4. **Auth** — the official API key (`PIXAI_API_KEY`) is the Bearer credential for
    every call. HTTPS verification is always on.
 

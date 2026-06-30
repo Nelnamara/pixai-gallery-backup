@@ -97,7 +97,7 @@ Everything deep lives in the **[Wiki](../../wiki)**:
 
 [Setup & Configuration](../../wiki/Setup) · [Backing Up](../../wiki/Backing-Up) · [The Gallery](../../wiki/Gallery) · [Generating Images](../../wiki/Generating) · [Collections & Curation](../../wiki/Collections) · [Deleting & Cloud Sync](../../wiki/Deleting) · [Collection Health](../../wiki/Health) · [Troubleshooting](../../wiki/Troubleshooting) · [How It Works](../../wiki/How-It-Works)
 
-In-repo: [`docs/architecture.md`](docs/architecture.md) (contributors) · [`API_OPERATIONS.md`](API_OPERATIONS.md) (API reference).
+In-repo: [`docs/architecture.md`](docs/architecture.md) (contributors).
 
 ---
 
