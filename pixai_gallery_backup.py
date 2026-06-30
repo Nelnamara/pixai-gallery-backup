@@ -2923,62 +2923,6 @@ def run_backfill_full_meta(args):
     print("Done. Fetched {:,} tasks, {:,} failed, catalog updated.".format(fetched, failed))
 
 
-def cmd_rename(args, out, img_dir, db_path):
-    """Rename already-downloaded files to the prompt_taskid_mediaid scheme."""
-    db_path = _ensure_db(out)
-    if not img_dir.exists():
-        raise PixAIError("No images folder at {}.".format(img_dir))
-    info_by_mid = {}
-    for row in load_catalog(db_path):
-        mid = row.get("media_id")
-        if mid:
-            info_by_mid[mid] = (row.get("task_id", ""),
-                                row.get("prompt_preview", ""))
-    renamed = skipped = unmatched = clash = 0
-    planned = []
-    used_names = set()
-    for p in sorted(img_dir.glob("*.*")):
-        if p.name.endswith(".part"):
-            continue
-        stem, ext = p.stem, p.suffix
-        mid = stem.split("_")[-1]
-        if mid not in info_by_mid:
-            unmatched += 1
-            continue
-        task_id, prompt = info_by_mid[mid]
-        new_stem = build_stem_name(prompt, task_id, mid,
-                                   args.name_length, args.name_sep)
-        new_name = new_stem + ext
-        if new_name == p.name:
-            skipped += 1
-            continue
-        target = img_dir / new_name
-        if new_name in used_names or (target.exists() and target != p):
-            clash += 1
-            continue
-        used_names.add(new_name)
-        planned.append((p, target))
-
-    print("Rename plan: {} to rename, {} already correct, {} unmatched in "
-          "catalog, {} skipped (name clash).".format(
-              len(planned), skipped, unmatched, clash))
-    for src, dst in planned[:8]:
-        print("  {}  ->  {}".format(src.name, dst.name))
-    if len(planned) > 8:
-        print("  ... and {} more".format(len(planned) - 8))
-
-    if getattr(args, "dry_run", False):
-        print("\nDry run -- nothing changed. Re-run without --dry-run to apply.")
-        return
-    for src, dst in planned:
-        try:
-            src.rename(dst)
-            renamed += 1
-        except OSError as e:
-            print("  FAILED {} ({})".format(src.name, e))
-    print("\nRenamed {} files.".format(renamed))
-
-
 def run_download(args, progress=None):
     """Run the full paginated download + catalog loop.
 

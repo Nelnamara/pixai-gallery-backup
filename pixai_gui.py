@@ -383,11 +383,16 @@ class SettingsBar(QGroupBox):
         load_btn.setFixedWidth(110)
         load_btn.clicked.connect(self._load_token_file)
 
-        tok_row = QHBoxLayout()
+        # The token field is a LEGACY fallback. When an API key is configured it's
+        # noise (and a footgun), so hide the whole row — reclaim the prime bar space.
+        self._tok_row_widget = QWidget()
+        tok_row = QHBoxLayout(self._tok_row_widget)
+        tok_row.setContentsMargins(0, 0, 0, 0)
         tok_row.addWidget(lbl_tok)
         tok_row.addWidget(self.token_edit)
         tok_row.addWidget(eye)
         tok_row.addWidget(load_btn)
+        self._tok_row_widget.setVisible(not self._has_api_key)
 
         lbl_out = QLabel("Output:")
         lbl_out.setFixedWidth(60)
@@ -418,7 +423,7 @@ class SettingsBar(QGroupBox):
         core.set_verbose(self.verbose_chk.isChecked())
 
         lay = QVBoxLayout(self)
-        lay.addLayout(tok_row)
+        lay.addWidget(self._tok_row_widget)
         lay.addLayout(out_row)
         lay.addWidget(self.verbose_chk)
 
@@ -596,24 +601,16 @@ class DownloadTab(QWidget):
         # Buttons
         self.btn_start = QPushButton("▶  Start Download")
         self.btn_start.setObjectName("btn_start")
-        self.btn_probe = QPushButton("Probe API")
-        self.btn_probe.setObjectName("btn_probe")
-        self.btn_count = QPushButton("Count Library")
-        self.btn_count.setObjectName("btn_count")
         self.btn_stop = QPushButton("■  Stop")
         self.btn_stop.setObjectName("btn_stop")
         self.btn_stop.setEnabled(False)
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_probe)
-        btn_row.addWidget(self.btn_count)
         btn_row.addStretch()
         btn_row.addWidget(self.btn_stop)
 
         self.btn_start.clicked.connect(self._start_download)
-        self.btn_probe.clicked.connect(self._start_probe)
-        self.btn_count.clicked.connect(self._start_count)
         self.btn_stop.clicked.connect(self._stop)
 
         self.log = LogWidget()
@@ -707,9 +704,6 @@ class DownloadTab(QWidget):
             self.prog_bar.setRange(0, 0)  # indeterminate bounce
             self.prog_label.setText("Checking {}{}...".format(done, new_str))
 
-    def _start_probe(self):    self._run(core.run_probe,    self._build_args())
-    def _start_count(self):    self._run(core.run_count,    self._build_args())
-
     def _stop(self):
         if self._worker:
             self._worker.terminate()
@@ -728,8 +722,7 @@ class DownloadTab(QWidget):
                 self.log.append_line("\n[ERROR] " + msg)
 
     def _set_running(self, running):
-        for w in (self.btn_start, self.btn_probe, self.btn_count):
-            w.setEnabled(not running)
+        self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
 
     def collect_settings(self):
@@ -766,18 +759,9 @@ class OrganizeTab(QWidget):
         opts = QGroupBox("Organize Options")
         g = QVBoxLayout(opts)
 
-        r1 = QHBoxLayout()
-        r1.addWidget(QLabel("Mode:"))
-        self._mode_grp = QButtonGroup(self)
-        self.rb_simple = QRadioButton("Simple rename  (flat, prompt_taskid_mediaid)")
-        self.rb_adv    = QRadioButton("Month folders  (YYYY-MM/ + descriptive names, reversible)")
-        for rb in (self.rb_simple, self.rb_adv):
-            self._mode_grp.addButton(rb)
-            r1.addWidget(rb)
-        (self.rb_adv if settings.get("org_adv", False)
-         else self.rb_simple).setChecked(True)
-        r1.addStretch()
-        g.addLayout(r1)
+        g.addWidget(QLabel(
+            "Normalizes the whole backup into YYYY-MM/ month folders with descriptive, "
+            "reversible filenames. Idempotent — run it anytime; use Dry run to preview."))
 
         r2 = QHBoxLayout()
         self.dry_run = QCheckBox("Dry run (preview only)")
@@ -872,10 +856,7 @@ class OrganizeTab(QWidget):
         out = Path(args.out)
         img_dir = out / "images"
         db_path = out / "catalog.db"
-        if self.rb_adv.isChecked():
-            fn = lambda: core.cmd_organize(args, out, img_dir, db_path)
-        else:
-            fn = lambda: core.cmd_rename(args, out, img_dir, db_path)
+        fn = lambda: core.cmd_organize(args, out, img_dir, db_path)
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._worker = Worker(fn)
@@ -911,7 +892,6 @@ class OrganizeTab(QWidget):
 
     def collect_settings(self):
         return {
-            "org_adv":     self.rb_adv.isChecked(),
             "org_embed":   self.embed_meta.isChecked(),
             "org_dry_run": self.dry_run.isChecked(),
         }
