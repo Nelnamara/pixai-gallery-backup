@@ -3508,15 +3508,14 @@ def main():
                     help="convert all already-downloaded .webp files to --convert format "
                          "(default png). No token needed. Supports --dry-run and --keep-webp.")
     ap.add_argument("--organize", action="store_true",
-                    help="rename already-downloaded files to the prompt_taskid_mediaid "
-                         "scheme using catalog.db, then exit")
+                    help="normalize the WHOLE backup into YYYY-MM/ month folders with "
+                         "descriptive filenames (no batch subfolders); writes a reversible "
+                         "move-manifest. Idempotent + dry-runnable. Then exit")
     ap.add_argument("--organize-live", action="store_true",
                     help="apply prompt_taskid_mediaid naming to files as they download "
                          "(same as default naming; flag makes intent explicit)")
     ap.add_argument("--organize-adv", action="store_true",
-                    help="normalize the WHOLE backup into YYYY-MM/ month folders with "
-                         "descriptive filenames (no batch subfolders); writes a reversible "
-                         "move-manifest. Idempotent + dry-runnable. Then exit")
+                    help="alias for --organize (kept for back-compat)")
     ap.add_argument("--organize-adv-live", action="store_true",
                     help="sort files into YYYY-MM/ month folders live as they download")
     ap.add_argument("--undo-organize", action="store_true",
@@ -3706,11 +3705,8 @@ def main():
         if args.undo_organize:
             cmd_undo_organize(args, out)
             return
-        if args.organize_adv:
+        if args.organize or args.organize_adv:   # --organize-adv: back-compat alias
             cmd_organize(args, out, img_dir, db_path)
-            return
-        if args.organize:
-            cmd_rename(args, out, img_dir, db_path)
             return
         if args.probe:
             run_probe(args)

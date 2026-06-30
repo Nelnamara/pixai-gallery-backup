@@ -362,7 +362,14 @@ class SettingsBar(QGroupBox):
         self.token_edit.setEchoMode(QLineEdit.Password)
         self.token_edit.setPlaceholderText(
             "Leave blank — uses PIXAI_API_KEY from config.json (legacy browser-token fallback)")
-        self.token_edit.setText(settings.get("token", ""))
+        # API key (config.json) is THE credential. When it's set, the legacy token
+        # field stays empty so a stale/persisted token can't silently override the key.
+        try:
+            import pixai_gallery_backup as _core
+            self._has_api_key = bool((_core._load_config() or {}).get("PIXAI_API_KEY", "").strip())
+        except Exception:
+            self._has_api_key = False
+        self.token_edit.setText("" if self._has_api_key else settings.get("token", ""))
 
         eye = QPushButton("👁")
         eye.setFixedWidth(34)
@@ -390,8 +397,9 @@ class SettingsBar(QGroupBox):
             default=settings.get("out", _default_out),
         )
 
-        # Auto-load token.txt from script folder if token field is empty
-        if not self.token_edit.text().strip():
+        # Legacy fallback ONLY: auto-load token.txt when there is NO API key. With a
+        # key configured, never auto-populate the field — a token there would override it.
+        if not self._has_api_key and not self.token_edit.text().strip():
             _tok_path = Path(__file__).parent / "token.txt"
             if _tok_path.exists():
                 self.token_edit.setText(_tok_path.read_text("utf-8").strip())

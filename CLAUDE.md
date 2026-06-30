@@ -182,8 +182,8 @@ python pixai_gallery_backup.py --update --workers 8       # incremental + higher
 python pixai_gallery_backup.py --workers 8 --page-size 500  # fast full backfill
 python pixai_gallery_backup.py --full-meta                # download + full prompt/seed/model
 python pixai_gallery_backup.py --backfill-full-meta       # fill existing rows
-python pixai_gallery_backup.py --organize-adv --dry-run   # preview folder sort
-python pixai_gallery_backup.py --organize-adv             # sort into batches/ + YYYY-MM/
+python pixai_gallery_backup.py --organize --dry-run       # preview month-folder normalize
+python pixai_gallery_backup.py --organize                 # normalize into YYYY-MM/ (reversible; --organize-adv is an alias)
 python pixai_gallery_backup.py --catalog-stats            # summarize catalog.db
 python pixai_gallery_backup.py --export-csv               # export catalog.db → CSV
 python pixai_gallery_backup.py --sync-artworks            # merge published-artwork metadata (title/likes/tags) by media_id
