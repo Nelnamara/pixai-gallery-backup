@@ -54,3 +54,24 @@ def test_gen_video_parameters_from_args():
 def test_params_json_override():
     a = SimpleNamespace(params_json='{"type":"x"}')
     assert core._gen_video_parameters(a) == {"type": "x"}
+
+
+def _video_args(tmp_path, **kw):
+    base = dict(out=str(tmp_path), image="55", tail="", prompt="p", negative="",
+                model="", video_model="", duration=5, vmode="professional",
+                audio=False, audio_language="english", video_prompt_helper=False,
+                params_json="", task_id="", confirm=False)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_generate_video_previews_without_confirm(tmp_path):
+    # No --confirm => preview only, no network, spends nothing.
+    res = core.run_generate_video(_video_args(tmp_path))
+    assert res == {"submitted": False}
+
+
+def test_generate_video_requires_a_source_image(tmp_path):
+    import pytest
+    with pytest.raises(core.PixAIError):
+        core.run_generate_video(_video_args(tmp_path, image=""))

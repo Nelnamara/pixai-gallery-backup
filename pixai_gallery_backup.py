@@ -2457,14 +2457,15 @@ def _gen_video_parameters(args):
     return build_video_parameters(
         getattr(args, "prompt", "") or "",
         getattr(args, "image", "") or "",
-        model=getattr(args, "model", None) or DEFAULT_VIDEO_MODEL,
+        model=(getattr(args, "video_model", "") or getattr(args, "model", "")
+               or DEFAULT_VIDEO_MODEL),
         tail_media_id=getattr(args, "tail", "") or "",
         duration=getattr(args, "duration", 5) or 5,
         mode=getattr(args, "vmode", None) or "professional",
         generate_audio=bool(getattr(args, "audio", False)),
         audio_language=getattr(args, "audio_language", None) or "english",
         negative=getattr(args, "negative", "") or "",
-        use_prompt_helper=bool(getattr(args, "prompt_helper", False)),
+        use_prompt_helper=bool(getattr(args, "video_prompt_helper", False)),
     )
 
 
@@ -2602,6 +2603,121 @@ def run_generate(args):
     for s in saved:
         print("  " + s)
     return {"submitted": True, "task_id": task_id, "images": len(saved)}
+
+
+def run_generate_video(args):
+    """Create an image-to-video clip via PixAI (createGenerationTask + i2vPro params),
+    poll to completion, download the mp4 into videos/, and catalog it (source='api',
+    is_video='1'). GUARDED: without --confirm it only PREVIEWS (spends nothing). Video
+    is expensive (~27.5k credits for a 5s V4.0 clip), so the preview shouts the cost.
+    Reuses the same submit/poll as images and the same video download as --sync-videos."""
+    out = Path(args.out)
+    existing_task = (getattr(args, "task_id", "") or "").strip()
+    if not existing_task and not (getattr(args, "image", "") or "").strip():
+        raise PixAIError("--generate-video needs --image <media_id> (a catalog image to animate).")
+    params = _gen_video_parameters(args)
+
+    if not existing_task and not getattr(args, "confirm", False):
+        i2v = (params.get("parameters") or {}).get("i2vPro") or {}
+        print("=== PixAI createGenerationTask -- VIDEO (PREVIEW, no credits spent) ===")
+        print(json.dumps({"parameters": params}, indent=2))
+        print("\n*** VIDEO GENERATION IS EXPENSIVE ***")
+        print("  model={}  mode={}  duration={}s{}{}".format(
+            i2v.get("model"), i2v.get("mode"), i2v.get("duration"),
+            "  +audio" if i2v.get("generateAudio") else "",
+            "  (first/last-frame)" if i2v.get("tailMediaId") else ""))
+        print("  A V4.0 5s clip costs ~27,500 credits. Re-run with --confirm to submit.")
+        return {"submitted": False}
+
+    out.mkdir(parents=True, exist_ok=True)
+    db_path = out / "catalog.db"
+    init_db(db_path)
+    session = _make_session(getattr(args, "token", None))
+    vdir = out / "videos"
+    vdir.mkdir(parents=True, exist_ok=True)
+
+    if existing_task:
+        task_id = existing_task
+        print("Fetching existing video task (no credits):", task_id)
+    else:
+        print("Submitting VIDEO generation task (this spends credits)...")
+        created = gql_adhoc(session, _GEN_MUTATION, {"parameters": params})
+        task_id = (created.get("createGenerationTask") or {}).get("id")
+        if not task_id:
+            raise PixAIError("no task id returned: " + json.dumps(created)[:300])
+        print("  task id:", task_id)
+        deadline = time.time() + getattr(args, "poll_timeout", 600)   # video renders slower
+        while time.time() < deadline:
+            task = (gql_adhoc(session, _GEN_STATUS, {"id": task_id}) or {}).get("task") or {}
+            status = str(task.get("status", "")).lower()
+            vlog("video poll: {}".format(status or "(unknown)"))
+            if status in ("completed", "succeeded", "success", "done"):
+                break
+            if status in ("failed", "error", "cancelled", "canceled"):
+                raise PixAIError("video generation ended with status: " + status)
+            time.sleep(5)
+        else:
+            raise PixAIError("timed out after {}s (task {})".format(
+                getattr(args, "poll_timeout", 600), task_id))
+
+    # Result: getTaskById -> outputs.videos -> fileUrl -> download mp4 (same as --sync-videos).
+    result = task_detail_gql(session, task_id) or {}
+    outs, shared = video_outputs(result)
+    if not outs:
+        raise PixAIError("video task completed but no video outputs found")
+    detail = ((result or {}).get("outputs") or {}).get("detailParameters") or {}
+    i2v_sent = (params.get("parameters") or {}).get("i2vPro") or {}
+    prompt = shared.get("prompt") or i2v_sent.get("prompts", "")
+
+    from pixai_gallery import make_thumbnail
+    thumb_dir = out / "gallery" / "thumbs"
+    rows, saved = [], []
+    for o in outs:
+        vmid = o["video_media_id"]
+        fm = media_file_gql(session, vmid)
+        url = fm.get("fileUrl")
+        if not url:
+            print("  no file url for video", vmid)
+            continue
+        stem = vdir / build_stem_name(prompt, task_id, vmid,
+                                      getattr(args, "name_length", 60), "_")
+        status, path = download(session, url, stem)
+        if status not in ("ok", "skip") or not path:
+            continue
+        full = {f: "" for f in CATALOG_FIELDS}
+        full.update({
+            "task_id": str(task_id), "media_id": vmid,
+            "filename": str(path.relative_to(out)).replace("\\", "/"),
+            "url": url, "source": "api", "status": "completed", "is_video": "1",
+            "created_at": result.get("createdAt") or time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "prompt_full": prompt, "prompt_preview": (prompt or "")[:100],
+            "negative_prompt": i2v_sent.get("negativePrompts", ""),
+            "seed": str(o.get("seed") or ""),
+            "poster_media_id": o.get("poster_media_id", ""),
+            "video_duration": str(shared.get("duration") or i2v_sent.get("duration") or ""),
+            "model_id": str(i2v_sent.get("model") or ""),
+            "width": str(detail.get("width") or ""),
+            "height": str(detail.get("height") or ""),
+        })
+        # Best-effort poster thumbnail: the PixAI still frame, keyed by the video id.
+        pm = o.get("poster_media_id")
+        if pm:
+            purl, _pi = resolve_media(session, pm)
+            if purl:
+                ptmp = out / "gallery" / "_postertmp"
+                ptmp.mkdir(parents=True, exist_ok=True)
+                st, pp = download(session, purl, ptmp / str(pm))
+                if st in ("ok", "skip") and pp:
+                    make_thumbnail(pp, thumb_dir / "{}.jpg".format(vmid))
+        rows.append(full)
+        saved.append(str(path))
+
+    if rows:
+        save_catalog(db_path, rows)
+    print("Generated + cataloged {} video(s):".format(len(saved)))
+    for s in saved:
+        print("  " + s)
+    return {"submitted": True, "task_id": task_id, "videos": len(saved)}
 
 
 def _needs_model_fix(row):
@@ -3604,7 +3720,24 @@ def main():
     gen.add_argument("--params-json", default="", help="raw parameters object (overrides the above)")
     gen.add_argument("--poll-timeout", type=int, default=300)
     gen.add_argument("--confirm", action="store_true",
-                     help="REQUIRED for --generate to actually submit (spends credits)")
+                     help="REQUIRED for --generate/--generate-video to actually submit (spends credits)")
+    # --- image-to-video generation (shares --prompt/--negative/--model/--confirm/--task-id) ---
+    gen.add_argument("--generate-video", dest="generate_video", action="store_true",
+                     help="create an image-to-video clip via PixAI from a source image "
+                          "(--image). Preview-only unless --confirm. Video is EXPENSIVE "
+                          "(~27,500 credits for a 5s V4.0 clip)")
+    gen.add_argument("--image", default="", help="source image media_id to animate (first frame)")
+    gen.add_argument("--tail", default="", help="optional last-frame image media_id "
+                     "(first/last-frame interpolation)")
+    gen.add_argument("--duration", type=int, default=5, help="video length in seconds (e.g. 5/10/15)")
+    gen.add_argument("--video-model", dest="video_model", default="",
+                     help="video model (default v4.0.1); overrides --model for --generate-video")
+    gen.add_argument("--video-mode", dest="vmode", default="professional",
+                     choices=["basic", "professional"], help="video quality tier")
+    gen.add_argument("--audio", action="store_true", help="generate audio with the video")
+    gen.add_argument("--audio-language", dest="audio_language", default="english")
+    gen.add_argument("--video-prompt-helper", dest="video_prompt_helper", action="store_true",
+                     help="enable PixAI's prompt-helper for video (off by default)")
     gen.add_argument("--list-models", nargs="?", const="", default=None, metavar="KEYWORD",
                      help="search PixAI generation models by keyword and print their "
                           "generatable version ids (use as --model), then exit")
@@ -3681,6 +3814,9 @@ def main():
             return
         if args.generate:
             run_generate(args)
+            return
+        if getattr(args, "generate_video", False):
+            run_generate_video(args)
             return
         if args.fix_model_names:
             run_fix_models(args)
