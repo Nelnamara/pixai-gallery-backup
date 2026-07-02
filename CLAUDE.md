@@ -62,6 +62,11 @@ Built by reverse-engineering site network traffic (catalogued privately in `priv
 | `vlog()` / `set_verbose()` | `-v/--verbose` diagnostics: timestamped per-page / per-image / download timing to stdout (the GUI log pane captures it). No-op until enabled |
 | `gql_adhoc()` | Generic ad-hoc GraphQL **POST** (full query document, no persisted hash). Works for queries AND mutations under the API-key Bearer. The foundation for client ops beyond the reverse-engineered listing path; `media_file_gql` + `account_info` use it. Raises `PixAIError` on GraphQL/HTTP error |
 | `account_info()` / `run_account_info()` | Read-only account dashboard (credits/membership/subscription) via `gql_adhoc`. **Never moves money** — no payment/subscription mutations are implemented, by design |
+| `run_generate()` | `--generate`: create images via `createGenerationTask` (ad-hoc POST), poll, download, catalog as `source='api'`. Preview unless `--confirm`. `--task-id` recovers an already-created task for free |
+| `build_video_parameters()` / `run_generate_video()` | `--generate-video`: image-to-video (`i2vPro`) — VERIFIED submit shape `{channel, i2vPro:{model,mediaId,[tailMediaId],mode,duration,generateAudio,…}}`. Preview unless `--confirm` (video is EXPENSIVE, ~27.5k credits); captures `paidCredit` as actual cost; downloads mp4 into `videos/` |
+| `upload_media()` | `--upload`: local file → `media_id` via the 3-step S3 handshake (`uploadMedia` presign → PUT bytes → `uploadMedia` register). Plain mutation over `gql_adhoc`; **free**. Unblocks inpaint / Edit / LoRA "bring your own image" |
+| `build_chat_edit_parameters()` / `run_edit_image()` | `--edit-image`: instruct editing via `createGenerationTask` with a `chat` block (`prompts`+`mediaId`/`mediaIds`+`modelId`+`modelConfig`). `--edit-src` takes a catalog `media_id` OR a local file (auto-uploaded on `--confirm`); repeat for multi-image reference. Preview unless `--confirm` |
+| `list_kaisuukens()` / `run_cards()` | `--cards`: read-only display of free-generation tickets ("kaisuuken" / 回数券) + their ids. Fails soft (fields RE-inferred). Spend a specific card on any create run with `--kaisuuken-id <id>` (attaches `kaisuukenId`; never auto-consumes) |
 
 ### Key helpers in `pixai_gallery.py`
 
@@ -156,9 +161,25 @@ recapture is in `private/RE_NOTES.md`.
 
 ---
 
+## Creating: generate · video · edit · upload · cards
+
+All creation rides the SAME `createGenerationTask` mutation over `gql_adhoc` (no persisted hash),
+differing only in the `parameters` object. **Every credit-spending path is preview-only until
+`--confirm`**, and `--task-id` recovers an already-created task for free.
+
+- `--generate` → image (`parameters` = the image params).
+- `--generate-video --image <media_id>` → i2vPro video (`parameters` = `{channel, i2vPro:{…}}`).
+- `--edit-image --edit-src <media_id|file> --prompt "…"` → instruct edit (`parameters` = `{chat:{…}}`);
+  local files auto-upload via `uploadMedia`; repeat `--edit-src` for multi-image reference.
+- `--upload <file>` → prints a `media_id` (free; the 3-step S3 handshake).
+- `--cards` → read-only free-card (kaisuuken) balances + ids; `--kaisuuken-id <id>` spends one on a run.
+
+Deeper RE detail (submit shapes, the full app op catalog, kaisuuken/upload/edit captures, pricing) is
+in git-ignored `private/GENERATOR_SURFACE.md` + `private/APP_OPERATIONS_FULL.md`.
+
 ## Test suite
 
-181 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
+229 pytest tests in `tests/`. Run with `python -m pytest`. All tests must pass before merging to master.
 
 ---
 
@@ -197,4 +218,12 @@ python pixai_gallery.py --out pixai_backup                # launch gallery at :5
 python pixai_gallery_backup.py --delete-task <id> [<id> ...]        # DRY-RUN: list what would be deleted (nothing happens)
 python pixai_gallery_backup.py --delete-task <id> --apply --yes     # actually delete from your account (irreversible; null=success)
 python pixai_gallery_backup.py -v --update                # verbose: per-page / per-image timing diagnostics
+# --- creating (all preview-only until --confirm; --task-id recovers a task for free) ---
+python pixai_gallery_backup.py --account                  # read-only credits/membership dashboard
+python pixai_gallery_backup.py --cards                    # read-only free-card (kaisuuken) balances + ids
+python pixai_gallery_backup.py --upload path/to/image.png # local file -> media_id (free; S3 upload)
+python pixai_gallery_backup.py --generate --prompt "..."               # preview an image gen (add --confirm to spend)
+python pixai_gallery_backup.py --generate-video --image <media_id> --prompt "..."   # preview i2v (EXPENSIVE; --confirm)
+python pixai_gallery_backup.py --edit-image --edit-src <media_id|file> --prompt "make it night"  # preview an edit
+python pixai_gallery_backup.py --edit-image --edit-src img.png --prompt "..." --kaisuuken-id <id> --confirm  # spend a free card
 ```

@@ -75,3 +75,65 @@ python pixai_gallery_backup.py --generate --task-id <id>
 
 Generated images are tagged `source='api'` — filter to them in the gallery via
 **Source → Generated**.
+
+---
+
+## Animate an image → video (`--generate-video`)
+
+Turn any catalog image into a short clip (image-to-video). Same preview/confirm safety —
+but **video is expensive** (a V4.0 5-second clip is ~27,500 credits, ~50–100× an image),
+so the preview shouts the cost, and the actual charge is read back from the server
+(`paidCredit`) after it runs. Clips download into `videos/` and catalog as `is_video`.
+
+**GUI:** the **Video** tab — paste a source image `media_id`, pick model / duration
+(5/10/15s; 15 is V4.0-only) / mode (Basic cheaper, Professional = Plus), optional audio,
+optional **End frame id** for first/last-frame interpolation, then Confirm.
+
+```bash
+# preview (free): prints the exact request + the ~credit cost
+python pixai_gallery_backup.py --generate-video --image <media_id> --prompt "she turns slowly toward camera"
+# really animate (EXPENSIVE — spends credits):
+python pixai_gallery_backup.py --generate-video --image <media_id> --prompt "..." \
+    --video-model v4.0.1 --duration 5 --video-mode professional --confirm
+# recover a finished clip for free:
+python pixai_gallery_backup.py --generate-video --task-id <id>
+```
+
+## Edit an image with words (`--edit-image`)
+
+Describe a change and let PixAI's Edit model apply it — "make it nighttime", "add a hat".
+Source can be a **catalog `media_id`** or a **local file** (uploaded automatically); pass
+`--edit-src` more than once for multi-image reference. Results catalog as `source='api'`.
+
+**GUI:** the **Edit** tab — put media_id(s) or a file path in *Source*, or click **Browse…**
+to pick a local image; type the change; set resolution/aspect/quality; Confirm.
+
+```bash
+# preview (free; local files show as placeholders, nothing uploads):
+python pixai_gallery_backup.py --edit-image --edit-src <media_id> --prompt "make it nighttime, add snow"
+# edit a LOCAL image (uploads it, then edits) — spends credits:
+python pixai_gallery_backup.py --edit-image --edit-src "C:\pics\her.png" --prompt "..." --confirm
+```
+
+## Upload a local image (`--upload`)
+
+Get a reusable `media_id` for any local file — **free**. Useful to pre-upload once and
+reuse the id across edit/video runs.
+
+```bash
+python pixai_gallery_backup.py --upload "C:\pics\her.png"     # prints: Uploaded media_id: <id>
+```
+
+## Free cards (`--cards` / `--kaisuuken-id`)
+
+PixAI grants free-generation tickets — **kaisuuken** (回数券, "ticket book") — through
+membership and events. When one matches your run, it's free instead of charging credits.
+
+```bash
+python pixai_gallery_backup.py --cards        # read-only: your cards + their ids and balances
+# spend a specific card on a run (instead of credits):
+python pixai_gallery_backup.py --edit-image --edit-src <media_id> --prompt "..." --kaisuuken-id <id> --confirm
+```
+
+The tool **never auto-spends a card** — you pass a specific id from `--cards`, still behind
+`--confirm`.
