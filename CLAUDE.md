@@ -12,6 +12,28 @@ Built by reverse-engineering site network traffic (catalogued privately in `priv
 
 ---
 
+## Working across machines (home ⇄ work) — READ THIS FIRST
+
+This repo is edited from more than one machine. Cross-machine breakage here is almost
+always **config drift, not real changes** — do not blame the user, do not "fix" it with a
+mass commit. Follow this protocol:
+
+1. **Line endings are pinned by `.gitattributes`** (LF in the repo). Do NOT change
+   `core.autocrlf`, do NOT run line-ending "fixes", do NOT commit a mass line-ending diff.
+   If `git status` shows *every* file modified, STOP — that's line-ending drift. Re-check
+   `.gitattributes` is present and run `git add --renormalize .`; never `git checkout -- .`
+   away someone's real work to make it "clean."
+2. **Default working branch is `video-gen`** (until merged to master). `git checkout video-gen`
+   before doing anything. Do not start committing on `master`.
+3. **Pull before you start, push when you stop:** `git pull --rebase --no-edit` at session
+   start, `git push` at session end. This is what prevents "updates were rejected" /
+   divergence. If push is rejected, it's the remote moving — pull --rebase, then push.
+4. **Never `git add -A` / `git add .`** — stray untracked files live here (`config.json`,
+   `.coverage`, `design_refs/`, old `pixai_*.py` side scripts). Stage **explicit paths** only.
+5. **`config.json` + `private/` are git-ignored and machine-local** — they will NOT be on the
+   other machine, and that's correct. Don't recreate, commit, or complain about their absence.
+6. **Commits: no `Co-Authored-By: Claude` trailer** (standing preference).
+
 ## Architecture / request flow
 
 1. **Listing query is an Apollo persisted query (GET).** The site sends `operationName` + a `sha256Hash`; the query body lives on PixAI's server. Constants (`OPERATION_NAME`, `PERSISTED_QUERY_HASH`, `U3T`, `USER_ID`) are captured from the browser and stored in git-ignored `config.json`.

@@ -1,0 +1,42 @@
+# Normalize line endings in the REPO so different machines (home Windows,
+# work cloud/Linux) can't disagree and produce phantom "everything changed"
+# diffs. `* text=auto` stores all text as LF in git; Windows still checks out
+# CRLF locally, but git compares against the normalized blob, so no churn.
+* text=auto
+
+# Explicit text types (belt and suspenders)
+*.py    text
+*.md    text
+*.txt   text
+*.json  text
+*.html  text
+*.css   text
+*.js    text
+*.yml   text
+*.yaml  text
+*.cfg   text
+*.ini   text
+*.toml  text
+
+# Platform-native scripts keep their expected endings
+*.sh    text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary — git must never touch these
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.mp4   binary
+*.webm  binary
+*.db    binary
+*.sqlite binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
