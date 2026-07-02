@@ -2419,7 +2419,7 @@ DEFAULT_VIDEO_MODEL = "v4.0.1"
 def build_video_parameters(prompt, media_id, model=DEFAULT_VIDEO_MODEL, *,
                            tail_media_id="", duration=5, mode="professional",
                            generate_audio=False, audio_language="english",
-                           negative="", use_prompt_helper=False):
+                           negative="", use_prompt_helper=False, kaisuuken_id=""):
     """Build createGenerationTask's `parameters` for an image-to-video (i2vPro) job.
 
     VERIFIED against a real submit (2026-07-01): video uses the SAME
@@ -2445,7 +2445,10 @@ def build_video_parameters(prompt, media_id, model=DEFAULT_VIDEO_MODEL, *,
         i2v["tailMediaId"] = str(tail_media_id)
     if negative:
         i2v["negativePrompts"] = negative
-    return {"channel": "private", "i2vPro": i2v}
+    params = {"channel": "private", "i2vPro": i2v}
+    if kaisuuken_id:
+        params["kaisuukenId"] = str(kaisuuken_id)   # spend a free card instead of credits
+    return params
 
 
 def _gen_video_parameters(args):
@@ -2465,6 +2468,7 @@ def _gen_video_parameters(args):
         audio_language=getattr(args, "audio_language", None) or "english",
         negative=getattr(args, "negative", "") or "",
         use_prompt_helper=bool(getattr(args, "video_prompt_helper", False)),
+        kaisuuken_id=getattr(args, "kaisuuken_id", "") or "",
     )
 
 
@@ -2532,7 +2536,8 @@ def _is_local_source(src):
 
 
 def build_chat_edit_parameters(prompt, media_ids, model_id=EDIT_PRO_MODEL_ID, *,
-                               resolution="1K", aspect_ratio="3:4", quality="medium"):
+                               resolution="1K", aspect_ratio="3:4", quality="medium",
+                               kaisuuken_id=""):
     """Build createGenerationTask's `parameters` for an instruct edit (the `chat`
     block), verified against a real Edit-Pro submit (2026-07-01). `media_ids` is one
     or more source media_ids (an array => multi-image reference editing); the first
@@ -2543,7 +2548,7 @@ def build_chat_edit_parameters(prompt, media_ids, model_id=EDIT_PRO_MODEL_ID, *,
     ids = [str(m) for m in (media_ids or []) if str(m).strip()]
     if not ids:
         raise PixAIError("edit needs at least one source media_id")
-    return {"chat": {
+    params = {"chat": {
         "prompts": prompt or "",
         "mediaId": ids[0],
         "mediaIds": ids,
@@ -2552,6 +2557,9 @@ def build_chat_edit_parameters(prompt, media_ids, model_id=EDIT_PRO_MODEL_ID, *,
                         "aspectRatio": aspect_ratio,
                         "quality": quality},
     }}
+    if kaisuuken_id:
+        params["kaisuukenId"] = str(kaisuuken_id)   # spend a free card instead of credits
+    return params
 
 
 def _edit_config_from_args(args):
@@ -2561,6 +2569,7 @@ def _edit_config_from_args(args):
         resolution=getattr(args, "edit_resolution", "") or "1K",
         aspect_ratio=getattr(args, "edit_aspect", "") or "3:4",
         quality=getattr(args, "edit_quality", "") or "medium",
+        kaisuuken_id=getattr(args, "kaisuuken_id", "") or "",
     )
 
 
@@ -2858,7 +2867,7 @@ def run_edit_image(args):
             params = build_chat_edit_parameters(
                 prompt, preview_ids, model_id=cfg["model_id"],
                 resolution=cfg["resolution"], aspect_ratio=cfg["aspect_ratio"],
-                quality=cfg["quality"])
+                quality=cfg["quality"], kaisuuken_id=cfg["kaisuuken_id"])
         print(json.dumps({"parameters": params}, indent=2))
         print("\nThis would SPEND PixAI credits (unless a free Edit card applies). "
               "Re-run with --confirm to submit.")
@@ -2889,7 +2898,7 @@ def run_edit_image(args):
             params = build_chat_edit_parameters(
                 prompt, media_ids, model_id=cfg["model_id"],
                 resolution=cfg["resolution"], aspect_ratio=cfg["aspect_ratio"],
-                quality=cfg["quality"])
+                quality=cfg["quality"], kaisuuken_id=cfg["kaisuuken_id"])
         print("Submitting EDIT task (spends credits unless a free card applies)...")
         created = gql_adhoc(session, _GEN_MUTATION, {"parameters": params})
         task_id = (created.get("createGenerationTask") or {}).get("id")
@@ -3092,6 +3101,95 @@ def run_account_info(args):
             renew, (sub.get("endAt") or "")[:10]))
     print("\n(Read-only. To buy credits or change your plan, use the browser.)")
     return {"quota": me.get("quotaAmount"), "membership": mem.get("membershipId")}
+
+
+# --- Free "cards" (kaisuuken / 回数券) -------------------------------------------
+# PixAI grants free-generation tickets ("kaisuuken") via membership/events. When a
+# generation's params match an available ticket, the client attaches a `kaisuukenId`
+# to the submit and it's free instead of charging credits. We keep this READ + explicit-
+# id only: --cards shows balances + ids; pass a specific --kaisuuken-id to spend one.
+# We NEVER auto-consume a card. FIELD NAMES BELOW ARE RE-INFERRED (see
+# private/GENERATOR_SURFACE.md) and want one live confirmation; list_kaisuukens fails soft.
+_KAISUUKEN_QUERY = """
+query {
+  me {
+    id
+    kaisuukens {
+      id
+      categoryCode
+      taskType
+      total
+      remaining
+      consumeAmount
+      expiresAt
+      status
+    }
+  }
+}
+"""
+
+
+def _normalize_kaisuuken(raw):
+    """Tolerantly normalize one kaisuuken dict (RE-inferred field names vary). Returns
+    {id, category, task_type, total, remaining, expires, status}."""
+    raw = raw or {}
+
+    def first(*keys):
+        for k in keys:
+            v = raw.get(k)
+            if v not in (None, ""):
+                return v
+        return None
+
+    total = first("total", "amount", "count", "freeAmount", "quota")
+    remaining = first("remaining", "left", "balance", "remainingAmount")
+    used = first("used", "usedAmount", "consumed", "consumeAmount")
+    if remaining is None and total is not None and used is not None:
+        try:
+            remaining = int(total) - int(used)
+        except (TypeError, ValueError):
+            remaining = None
+    return {
+        "id": first("id", "kaisuukenId"),
+        "category": first("categoryCode", "category", "code"),
+        "task_type": first("taskType", "type", "kind"),
+        "total": total,
+        "remaining": remaining,
+        "expires": first("expiresAt", "expiresInDays", "endAt"),
+        "status": first("status", "state"),
+    }
+
+
+def list_kaisuukens(session):
+    """Read the account's free-generation tickets (kaisuuken). Read-only; fails soft
+    (returns []) if the schema differs -- fields are RE-inferred and may need a live
+    re-capture. Never spends anything."""
+    try:
+        me = (gql_adhoc(session, _KAISUUKEN_QUERY) or {}).get("me") or {}
+    except PixAIError:
+        return []
+    return [_normalize_kaisuuken(k) for k in (me.get("kaisuukens") or [])]
+
+
+def run_cards(args):
+    """Print the account's free-generation cards (kaisuuken) + their ids, so you can
+    pass one to --kaisuuken-id on a generate/edit/video run. Read-only; spends nothing."""
+    session = _make_session(getattr(args, "token", None))
+    cards = list_kaisuukens(session)
+    if not cards:
+        print("No free cards found (or the kaisuuken schema needs a live re-capture -- "
+              "see private notes). Read-only; nothing was spent.")
+        return {"cards": 0}
+    print("Free generation cards (kaisuuken):")
+    for c in cards:
+        rem, tot = c.get("remaining"), c.get("total")
+        count = "{}/{}".format("?" if rem is None else rem, "?" if tot is None else tot)
+        exp = "  exp {}".format(str(c["expires"])[:10]) if c.get("expires") else ""
+        print("  {:>7}  {:<14} id={} {}{}".format(
+            count, (c.get("category") or c.get("task_type") or "card"),
+            c.get("id") or "-", (c.get("status") or ""), exp))
+    print("\nSpend one on a run:  --kaisuuken-id <id> --confirm")
+    return {"cards": len(cards)}
 
 
 def run_reconcile_deleted(args):
@@ -3918,6 +4016,9 @@ def main():
     ap.add_argument("--account", action="store_true",
                     help="show a read-only account dashboard (credit balance, membership, "
                          "subscription) and exit. Never moves money")
+    ap.add_argument("--cards", action="store_true",
+                    help="show your free-generation cards (kaisuuken) + their ids, then exit. "
+                         "Read-only; pass an id to a run with --kaisuuken-id")
     ap.add_argument("--reconcile-deleted", action="store_true",
                     help="flag catalog rows whose PixAI task is gone from your live feed "
                          "(deleted on the website) so the gallery can surface them for a "
@@ -4003,6 +4104,9 @@ def main():
     gen.add_argument("--upload", dest="upload_file", default="", metavar="FILE",
                      help="upload a local image to PixAI, print its media_id, then exit "
                           "(the reusable primitive behind --edit-src file support). Free")
+    gen.add_argument("--kaisuuken-id", dest="kaisuuken_id", default="", metavar="ID",
+                     help="spend a specific free card (kaisuuken) id on this generate/edit/"
+                          "video run instead of credits. Get ids from --cards")
     gen.add_argument("--list-models", nargs="?", const="", default=None, metavar="KEYWORD",
                      help="search PixAI generation models by keyword and print their "
                           "generatable version ids (use as --model), then exit")
@@ -4067,6 +4171,9 @@ def main():
             return
         if args.account:
             run_account_info(args)
+            return
+        if getattr(args, "cards", False):
+            run_cards(args)
             return
         if args.reconcile_deleted:
             run_reconcile_deleted(args)
